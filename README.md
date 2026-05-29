@@ -1,5 +1,6 @@
 # FEMBOI-TOMBOI
 **Fleet Escort & Maritime-support Battlefield Operations Intelligence / Tactical-Offensive & Massive Ballistics Operations Intelligence**
+![1000103531](https://github.com/user-attachments/assets/bcee1000-60f4-4fa9-8703-fcdeea7b3bf6)
 
 FEMBOI-TOMBOI is a highly optimized, dynamic Field Commander HUD mod that brings a live military command center directly into your cockpit. By continually analyzing the active battlefield, it generates realistic, reactive tactical orders and provides critical early warning capabilities against mass-destruction weapons.
 
