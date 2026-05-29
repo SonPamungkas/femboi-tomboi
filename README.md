@@ -1,5 +1,6 @@
 # FEMBOI-TOMBOI
 **Fleet Escort & Maritime-support Battlefield Operations Intelligence / Tactical-Offensive & Massive Ballistics Operations Intelligence**
+<img width="1920" height="543" alt="1000103541" src="https://github.com/user-attachments/assets/c99994ec-40ff-4e0d-a394-db23f1674826" />
 
 ![1000103536](https://github.com/user-attachments/assets/842c6aea-eab4-407e-91ce-cc4bdfb34f8d)
 
