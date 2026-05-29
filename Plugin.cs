@@ -34,6 +34,59 @@ namespace FemboiTomboi
             StartCoroutine(CommanderLoop());
             StartCoroutine(NukeScannerLoop());
             StartCoroutine(DatalinkSpotterLoop());
+            StartCoroutine(SARScannerLoop());
+        }
+
+        private Unit cachedNearestPilot = null;
+
+        private System.Collections.IEnumerator SARScannerLoop()
+        {
+            yield return new WaitForSeconds(5f);
+
+            while (true)
+            {
+                yield return new WaitForSeconds(1f);
+                
+                GameManager.GetLocalAircraft(out Aircraft localAc);
+                if (localAc == null || localAc.NetworkHQ == null) 
+                {
+                    cachedNearestPilot = null;
+                    continue;
+                }
+
+                Unit nearest = null;
+                float minPilotDist = float.MaxValue;
+                
+                foreach (var u in UnitTracker.ActiveUnits)
+                {
+                    if (u == null || !u.gameObject.activeInHierarchy || u.disabled) continue;
+                    if (u.NetworkHQ != localAc.NetworkHQ) continue;
+                    
+                    bool isPilot = false;
+                    string n = u.gameObject.name;
+                    if (n != null && (n.IndexOf("pilot", StringComparison.OrdinalIgnoreCase) >= 0 || n.IndexOf("eject", StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        isPilot = true;
+                    }
+                    else
+                    {
+                        var comps = u.GetComponentsInChildren<Component>();
+                        if (comps.Any(c => c != null && c.GetType().Name.Contains("EjectedPilot"))) isPilot = true;
+                    }
+                    
+                    if (isPilot)
+                    {
+                        float d = Vector3.Distance(localAc.transform.position, u.transform.position);
+                        if (d < minPilotDist)
+                        {
+                            minPilotDist = d;
+                            nearest = u;
+                        }
+                    }
+                }
+                
+                cachedNearestPilot = nearest;
+            }
         }
 
         private void OnGUI()
@@ -213,33 +266,10 @@ namespace FemboiTomboi
 
                 // Add SAR Box (Bottom Left)
                 GameManager.GetLocalAircraft(out Aircraft localAc);
-                if (localAc != null && localAc.NetworkHQ != null)
+                if (localAc != null && localAc.NetworkHQ != null && cachedNearestPilot != null && cachedNearestPilot.gameObject.activeInHierarchy && !cachedNearestPilot.disabled)
                 {
-                    Unit nearestPilot = null;
-                    float minPilotDist = float.MaxValue;
-                    
-                    foreach (var u in UnitTracker.ActiveUnits)
-                    {
-                        if (u == null || !u.gameObject.activeInHierarchy || u.disabled) continue;
-                        if (u.NetworkHQ != localAc.NetworkHQ) continue;
-                        
-                        bool isPilot = u.gameObject.name.IndexOf("pilot", StringComparison.OrdinalIgnoreCase) >= 0 || u.gameObject.name.IndexOf("eject", StringComparison.OrdinalIgnoreCase) >= 0;
-                        if (!isPilot)
-                        {
-                            var comps = u.GetComponentsInChildren<Component>();
-                            if (comps.Any(c => c != null && c.GetType().Name.Contains("EjectedPilot"))) isPilot = true;
-                        }
-                        
-                        if (isPilot)
-                        {
-                            float d = Vector3.Distance(localAc.transform.position, u.transform.position);
-                            if (d < minPilotDist)
-                            {
-                                minPilotDist = d;
-                                nearestPilot = u;
-                            }
-                        }
-                    }
+                    Unit nearestPilot = cachedNearestPilot;
+                    float minPilotDist = Vector3.Distance(localAc.transform.position, nearestPilot.transform.position);
                     
                     if (nearestPilot != null)
                     {

@@ -23,6 +23,8 @@ namespace FemboiTomboi
         private HashSet<Unit> previouslySpottedCAS = new HashSet<Unit>();
         private HashSet<Unit> previouslySpottedIntercept = new HashSet<Unit>();
 
+        private Airbase[] cachedAirbases = null;
+
         private Dictionary<Unit, float> pendingSpotted = new Dictionary<Unit, float>();
         private Dictionary<Unit, float> pendingSpottedAirDefenses = new Dictionary<Unit, float>();
         private Dictionary<Unit, float> pendingSpottedCAS = new Dictionary<Unit, float>();
@@ -485,7 +487,8 @@ namespace FemboiTomboi
                         targetDesc = "Maintain Airspace";
                         targetFaction = "N/A";
                         
-                        var airbases = UnityEngine.Object.FindObjectsOfType<Airbase>();
+                        if (cachedAirbases == null || cachedAirbases.Length == 0) cachedAirbases = UnityEngine.Object.FindObjectsOfType<Airbase>();
+                        var airbases = cachedAirbases;
                         if (airbases != null && airbases.Length > 0)
                         {
                             var randAirbase = airbases[UnityEngine.Random.Range(0, airbases.Length)];
