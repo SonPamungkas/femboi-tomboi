@@ -15,18 +15,18 @@ namespace FemboiTomboi
 
         private string GetCommandPrefix(Unit targetUnit)
         {
-            if (targetUnit == null) return "TOMBOI";
+            if (targetUnit == null) return FemboiTomboiPlugin.prefixArmy;
             
             string objName = targetUnit.gameObject.name.ToLower();
             string cleanName = GetCleanUnitName(targetUnit).ToLower();
             
             if (targetUnit.GetComponent("Aircraft") != null || targetUnit.GetComponent("AeroController") != null || objName.Contains("aircraft") || objName.Contains("plane") || cleanName.Contains("plane"))
-                return "MOMMY Command";
+                return FemboiTomboiPlugin.prefixAir;
                 
             if (objName.Contains("carrier") || objName.Contains("cruiser") || objName.Contains("destroyer") || objName.Contains("ship") || objName.Contains("corvette") || cleanName.Contains("carrier") || cleanName.Contains("cruiser"))
-                return "FEMBOI Admiral";
+                return FemboiTomboiPlugin.prefixNavy;
                 
-            return "TOMBOI General";
+            return FemboiTomboiPlugin.prefixArmy;
         }
 
         private float? cachedGridOffsetX = null;

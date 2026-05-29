@@ -18,6 +18,7 @@ namespace FemboiTomboi
             public bool IsTargetingAirbase;
             public string TargetName;
             public string TargetPrefix;
+            public string SeekerType;
         }
 
         public static List<ActiveThreat> activeThreats = new List<ActiveThreat>();
@@ -53,7 +54,8 @@ namespace FemboiTomboi
                     bool targetsPlayer = false;
                     bool targetsAirbase = false;
                     string airbaseTargetName = "";
-                    string targetCommandPrefix = "TOMBOI";
+                    string targetCommandPrefix = FemboiTomboiPlugin.prefixArmy;
+                    string seekerTypeStr = "";
 
                     if (isMissile)
                     {
@@ -79,6 +81,40 @@ namespace FemboiTomboi
                                     }
                                 }
                             }
+                            
+                            if (m.TryGetComponent(out SARHSeeker _)) seekerTypeStr = "SARH";
+                            else if (m.TryGetComponent(out ARHSeeker _)) seekerTypeStr = "ARH";
+                            else if (m.TryGetComponent(out IRSeeker _)) seekerTypeStr = "IR";
+                            else if (m.TryGetComponent(out ARMSeeker _)) seekerTypeStr = "ARM";
+                            else if (m.TryGetComponent(out OpticalSeeker _)) seekerTypeStr = "OPT";
+                            else if (m.TryGetComponent(out OpticalSeekerCruiseMissile _)) seekerTypeStr = "OPT";
+                            else
+                            {
+                                var guidField = m.GetType().GetField("guidanceMode", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                                if (guidField != null)
+                                {
+                                    seekerTypeStr = guidField.GetValue(m).ToString();
+                                }
+                                else
+                                {
+                                    var guidProp = m.GetType().GetProperty("guidanceMode", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                                    if (guidProp != null)
+                                    {
+                                        seekerTypeStr = guidProp.GetValue(m, null).ToString();
+                                    }
+                                }
+                                
+                                if (!string.IsNullOrEmpty(seekerTypeStr))
+                                {
+                                    if (seekerTypeStr == "Radar") seekerTypeStr = "ARH";
+                                    else if (seekerTypeStr == "Heat") seekerTypeStr = "IR";
+                                    else if (seekerTypeStr == "AntiRad") seekerTypeStr = "ARM";
+                                    else if (seekerTypeStr == "Optical") seekerTypeStr = "OPT";
+                                    else if (seekerTypeStr == "Laser") seekerTypeStr = "LSR";
+                                    else if (seekerTypeStr == "Semi") seekerTypeStr = "SARH";
+                                    else if (seekerTypeStr == "BeamRiding") seekerTypeStr = "BEAM";
+                                }
+                            }
                         }
                     }
 
@@ -99,14 +135,13 @@ namespace FemboiTomboi
                         {
                             if (f.FieldType == typeof(float))
                             {
-                                if (f.Name.IndexOf("yield", StringComparison.OrdinalIgnoreCase) >= 0 || 
-                                    f.Name.IndexOf("damage", StringComparison.OrdinalIgnoreCase) >= 0)
+                                if (f.Name.IndexOf("yield", StringComparison.OrdinalIgnoreCase) >= 0)
                                 {
                                     float val = (float)f.GetValue(obj);
-                                    if (val >= 1500f) return true;
+                                    if (val >= 1500000f) return true;
                                 }
                             }
-                            else if (f.Name.IndexOf("warhead", StringComparison.OrdinalIgnoreCase) >= 0)
+                            else if (f.Name.IndexOf("kt", StringComparison.OrdinalIgnoreCase) >= 0)
                             {
                                 object warheadObj = f.GetValue(obj);
                                 if (warheadObj != null)
@@ -123,11 +158,10 @@ namespace FemboiTomboi
                                     {
                                         if (wf.FieldType == typeof(float))
                                         {
-                                            if (wf.Name.IndexOf("yield", StringComparison.OrdinalIgnoreCase) >= 0 || 
-                                                wf.Name.IndexOf("damage", StringComparison.OrdinalIgnoreCase) >= 0)
+                                            if (wf.Name.IndexOf("yield", StringComparison.OrdinalIgnoreCase) >= 0)
                                             {
                                                 float val = (float)wf.GetValue(warheadObj);
-                                                if (val >= 1500f) return true;
+                                                if (val >= 1500000f) return true;
                                             }
                                         }
                                     }
@@ -162,11 +196,11 @@ namespace FemboiTomboi
 
                     if (targetsPlayer && !hasNukeSystem)
                     {
-                        activeThreats.Add(new ActiveThreat { ThreatUnit = u, IsLaunched = true, IsAircraft = false, IsNuke = false, IsTargetingPlayer = true, IsTargetingAirbase = false, TargetPrefix = "MOMMY" });
+                        activeThreats.Add(new ActiveThreat { ThreatUnit = u, IsLaunched = true, IsAircraft = false, IsNuke = false, IsTargetingPlayer = true, IsTargetingAirbase = false, TargetPrefix = FemboiTomboiPlugin.prefixAir, SeekerType = seekerTypeStr });
                     }
                     else if (targetsAirbase && !hasNukeSystem)
                     {
-                        activeThreats.Add(new ActiveThreat { ThreatUnit = u, IsLaunched = true, IsAircraft = false, IsNuke = false, IsTargetingPlayer = false, IsTargetingAirbase = true, TargetName = airbaseTargetName, TargetPrefix = targetCommandPrefix });
+                        activeThreats.Add(new ActiveThreat { ThreatUnit = u, IsLaunched = true, IsAircraft = false, IsNuke = false, IsTargetingPlayer = false, IsTargetingAirbase = true, TargetName = airbaseTargetName, TargetPrefix = targetCommandPrefix, SeekerType = seekerTypeStr });
                         if (!airbaseThreatsSpotted.Contains(u))
                         {
                             airbaseThreatsSpotted.Add(u);
@@ -177,7 +211,7 @@ namespace FemboiTomboi
                     {
                         if (u.transform.parent == null && isMissile) // Launched Nuke
                         {
-                            activeThreats.Add(new ActiveThreat { ThreatUnit = u, IsLaunched = true, IsAircraft = false, IsNuke = true, IsTargetingPlayer = targetsPlayer, IsTargetingAirbase = targetsAirbase, TargetName = airbaseTargetName, TargetPrefix = targetsPlayer ? "MOMMY" : (targetsAirbase ? targetCommandPrefix : "TOMBOI") });
+                            activeThreats.Add(new ActiveThreat { ThreatUnit = u, IsLaunched = true, IsAircraft = false, IsNuke = true, IsTargetingPlayer = targetsPlayer, IsTargetingAirbase = targetsAirbase, TargetName = airbaseTargetName, TargetPrefix = targetsPlayer ? FemboiTomboiPlugin.prefixAir : (targetsAirbase ? targetCommandPrefix : FemboiTomboiPlugin.prefixArmy) });
                             if (targetsAirbase && !airbaseThreatsSpotted.Contains(u))
                             {
                                 airbaseThreatsSpotted.Add(u);
