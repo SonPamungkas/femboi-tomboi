@@ -14,7 +14,7 @@ Receive continuous, context-aware mission orders from your Field Commander. The 
 - **Ground Support & Strike**
 - **Resupply** (Detects surface units critically low on missile armament)
 
-**HUD Integration:** New objectives are relayed via a clean, bottom-left tactical feed. When you open the full-screen tactical map, your Active Priority Objective list is displayed for quick review.
+**HUD Integration:** New objectives are relayed via a clean, tactical feed. When you open the full-screen tactical map, your Active Priority Objective list is displayed for quick review.
 
 ### ☢️ Advanced Nuclear Threat Scanner (TOMBOI)
 Never get caught off-guard by strategic weapons again. The TOMBOI subsystem provides a dedicated, high-priority bottom-right HUD for tracking nuclear threats.
