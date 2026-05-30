@@ -31,34 +31,80 @@ namespace FemboiTomboi
 
         private float? cachedGridOffsetX = null;
         private float? cachedGridOffsetY = null;
-        
-        private string GetSector(Vector3 localPosition)
+        private string  _cachedTerrainId  = null;
+
+        private string GetCurrentTerrainId()
         {
-            if (cachedGridOffsetX == null || cachedGridOffsetY == null)
+            try
             {
-                cachedGridOffsetX = 80000f;
-                cachedGridOffsetY = 80000f;
-                try
+                NuclearOption.SceneLoading.MapKey? mapKey = null;
+
+                if (NuclearOption.Networking.NetworkManagerNuclearOption.i != null && NuclearOption.Networking.NetworkManagerNuclearOption.i.MapKey.HasValue)
                 {
-                    Type glType = Type.GetType("GridLabels, Assembly-CSharp");
-                    if (glType != null)
+                    mapKey = NuclearOption.Networking.NetworkManagerNuclearOption.i.MapKey;
+                }
+                else if (MissionManager.CurrentMission != null)
+                {
+                    mapKey = MissionManager.CurrentMission.MapKey;
+                }
+
+                if (mapKey.HasValue)
+                {
+                    string path = mapKey.Value.Path;
+                    if (!string.IsNullOrEmpty(path))
                     {
-                        var obj = FindObjectOfType(glType);
-                        if (obj != null)
+                        if (path.IndexOf("naval", StringComparison.OrdinalIgnoreCase) >= 0 || 
+                            path.IndexOf("archipelago", StringComparison.OrdinalIgnoreCase) >= 0 || 
+                            path.IndexOf("ignus", StringComparison.OrdinalIgnoreCase) >= 0) 
+                            return "terrain_naval";
+                            
+                        string typeName = mapKey.Value.TypeName;
+                        if (!string.IsNullOrEmpty(typeName))
                         {
-                            var fX = glType.GetField("offsetX", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                            var fY = glType.GetField("offsetY", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                            if (fX != null) cachedGridOffsetX = (float)fX.GetValue(obj);
-                            if (fY != null) cachedGridOffsetY = (float)fY.GetValue(obj);
+                            if (typeName.IndexOf("naval", StringComparison.OrdinalIgnoreCase) >= 0 || 
+                                typeName.IndexOf("ignus", StringComparison.OrdinalIgnoreCase) >= 0)
+                                return "terrain_naval";
                         }
                     }
                 }
-                catch { }
             }
+            catch { }
+            return UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+        }
+
+        private void InvalidateGridCacheIfTerrainChanged()
+        {
+            string id = GetCurrentTerrainId();
+            if (id != _cachedTerrainId)
+            {
+                _cachedTerrainId  = id;
+                cachedGridOffsetX = null;
+                cachedGridOffsetY = null;
+            }
+        }
+
+        private void SetGridOffsetsForTerrain(string terrainId)
+        {
+            // terrain_naval (Ignus) is 240km wide x 160km tall — 24 cols, 16 rows.
+            // Standard maps (Heartland / Terrain1) are 160km x 160km — 16 cols, 16 rows.
+            bool isNaval = terrainId != null &&
+                           terrainId.IndexOf("naval", StringComparison.OrdinalIgnoreCase) >= 0;
+
+            cachedGridOffsetX = isNaval ? 120000f : 80000f; // half-width in metres
+            cachedGridOffsetY = 80000f;                      // half-height always 80km
+        }
+        
+        private string GetSector(Vector3 localPosition)
+        {
+            // Invalidate cache whenever the active terrain changes
+            InvalidateGridCacheIfTerrainChanged();
+
+            if (cachedGridOffsetX == null || cachedGridOffsetY == null)
+                SetGridOffsetsForTerrain(_cachedTerrainId);
 
             var globalPos = localPosition.ToGlobalPosition();
 
-            float gridSize = 10000f; // 10km grids
+            float gridSize = 10000f; // 10 km per cell
             int xCol = Mathf.FloorToInt(((float)globalPos.x + cachedGridOffsetX.Value) / gridSize);
             int zRow = Mathf.FloorToInt((cachedGridOffsetY.Value - (float)globalPos.z) / gridSize);
             

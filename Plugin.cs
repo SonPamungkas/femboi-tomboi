@@ -18,10 +18,27 @@ namespace FemboiTomboi
         private GUIStyle nukeStyle;
         private GUIStyle criticalNukeStyle;
         private GUIStyle incomingStyle;
+        // Cached derived styles — built once, reused every frame
+        private GUIStyle _mapStyle;
+        private GUIStyle _sarStyle;
+        private GUIStyle _centeredStyle;
 
         public static string prefixAir = "MOMMY Command";
         public static string prefixArmy = "TOMBOI General";
         public static string prefixNavy = "FEMBOI Admiral";
+
+        // --- Display Cache (updated by coroutine, read by OnGUI with zero alloc) ---
+        private struct ObjectiveEntry { public string Text; public int Priority; }
+        private struct ThreatEntry   { public string Text; public int Priority; public float MinTof; public float BlinkRate; }
+
+        private readonly List<ObjectiveEntry> _cachedObjectives = new List<ObjectiveEntry>(16);
+        private readonly List<ThreatEntry>    _cachedCarriers   = new List<ThreatEntry>(8);
+        private readonly List<ThreatEntry>    _cachedNukes      = new List<ThreatEntry>(8);
+        private readonly List<ThreatEntry>    _cachedMissiles   = new List<ThreatEntry>(16);
+        private int    _cachedLaunchedNukeCount   = 0;
+        private int    _cachedIncomingMissileCount = 0;
+        private float  _cachedGlobalMinTof         = 99999f;
+        private bool   _displayCacheReady          = false;
 
         private void Awake()
         {
@@ -35,6 +52,7 @@ namespace FemboiTomboi
             StartCoroutine(NukeScannerLoop());
             StartCoroutine(DatalinkSpotterLoop());
             StartCoroutine(SARScannerLoop());
+            StartCoroutine(DisplayCacheLoop());
         }
 
         private Unit cachedNearestPilot = null;
@@ -89,6 +107,121 @@ namespace FemboiTomboi
             }
         }
 
+        // Background coroutine: recomputes all display strings at most 10x/sec
+        private System.Collections.IEnumerator DisplayCacheLoop()
+        {
+            yield return new WaitForSeconds(5f);
+            while (true)
+            {
+                yield return new WaitForSeconds(0.1f);
+                try { RebuildDisplayCache(); } catch { }
+            }
+        }
+
+        private void RebuildDisplayCache()
+        {
+            _cachedObjectives.Clear();
+
+            // CAP targets
+            foreach (var u in previouslySpottedAircraft)
+            {
+                if (u == null || !u.gameObject.activeInHierarchy || u.disabled) continue;
+                string sector = GetSector(u.transform.position);
+                string name   = GetCleanUnitName(u);
+                _cachedObjectives.Add(new ObjectiveEntry { Text = $"{prefixAir}:\nActive Tasking: CAP\nTarget: {name} at Sector {sector}.\nExecute when ready.", Priority = 0 });
+                if (_cachedObjectives.Count >= 7) break;
+            }
+
+            // SEAD targets
+            foreach (var u in previouslySpottedAirDefenses)
+            {
+                if (u == null || !u.gameObject.activeInHierarchy || u.disabled) continue;
+                if (_cachedObjectives.Count >= 7) break;
+                string sector = GetSector(u.transform.position);
+                string name   = GetCleanUnitName(u);
+                _cachedObjectives.Add(new ObjectiveEntry { Text = $"{prefixAir}:\nActive Tasking: SEAD/DEAD\nTarget: {name} at Sector {sector}.\nExecute when ready.", Priority = 0 });
+            }
+
+            // CAS targets
+            foreach (var u in previouslySpottedCAS)
+            {
+                if (u == null || !u.gameObject.activeInHierarchy || u.disabled) continue;
+                if (_cachedObjectives.Count >= 7) break;
+                string sector = GetSector(u.transform.position);
+                string name   = GetCleanUnitName(u);
+                _cachedObjectives.Add(new ObjectiveEntry { Text = $"{prefixArmy}:\nActive Tasking: CAS\nTarget: {name} at Sector {sector}.\nExecute when ready.", Priority = 1 });
+            }
+
+            // Intercept targets
+            foreach (var u in previouslySpottedIntercept)
+            {
+                if (u == null || !u.gameObject.activeInHierarchy || u.disabled) continue;
+                if (_cachedObjectives.Count >= 7) break;
+                string sector = GetSector(u.transform.position);
+                string name   = GetCleanUnitName(u);
+                _cachedObjectives.Add(new ObjectiveEntry { Text = $"{prefixArmy}:\nActive Tasking: INTERCEPT\nTarget: {name} at Sector {sector}.\nExecute when ready.", Priority = 1 });
+            }
+
+            // Airbase threats from activeThreats
+            foreach (var t in activeThreats)
+            {
+                if (t == null || t.ThreatUnit == null || !t.ThreatUnit.gameObject.activeInHierarchy) continue;
+                if (!t.IsTargetingAirbase) continue;
+                if (_cachedObjectives.Count >= 7) break;
+                string sector = GetSector(t.ThreatUnit.transform.position);
+                string prefix = t.TargetPrefix ?? prefixArmy;
+                bool isNuke = t.IsNuke;
+                string msg = $"{prefix}:\nActive Tasking: INTERCEPT\nTarget: {(isNuke ? "Nuclear Strike" : "Incoming")} for {t.TargetName} on Sector {sector}.\nPriority: {(isNuke ? "CRITICAL" : "HIGH")}";
+                _cachedObjectives.Add(new ObjectiveEntry { Text = msg, Priority = isNuke ? 2 : 1 });
+            }
+
+            // Sort objectives by priority
+            _cachedObjectives.Sort((a, b) => b.Priority.CompareTo(a.Priority));
+            if (_cachedObjectives.Count > 7) _cachedObjectives.RemoveRange(7, _cachedObjectives.Count - 7);
+
+            // Threats display
+            _cachedCarriers.Clear();
+            _cachedNukes.Clear();
+            _cachedMissiles.Clear();
+            _cachedLaunchedNukeCount   = 0;
+            _cachedIncomingMissileCount = 0;
+            _cachedGlobalMinTof         = 99999f;
+
+            foreach (var t in activeThreats)
+            {
+                if (t == null || t.ThreatUnit == null) continue;
+                string sector = GetSector(t.ThreatUnit.transform.position);
+                if (t.IsAircraft)
+                {
+                    string facPrefix = GetFactionName(t.ThreatUnit.gameObject.name);
+                    facPrefix = facPrefix != "Unknown Faction" ? facPrefix + " " : "";
+                    string name = GetCleanUnitName(t.ThreatUnit);
+                    _cachedCarriers.Add(new ThreatEntry { Text = $"[{sector}] {facPrefix}{name}", Priority = 1 });
+                }
+                else if (t.IsLaunched && t.IsNuke)
+                {
+                    _cachedLaunchedNukeCount++;
+                    float tof = GetToF(t.ThreatUnit);
+                    float spd = t.ThreatUnit.rb != null ? t.ThreatUnit.rb.velocity.magnitude * 3.6f : 0f;
+                    string seekerStr = !string.IsNullOrEmpty(t.SeekerType) ? $"[{t.SeekerType}]" : "[UNK]";
+                    string targetTxt = t.IsTargetingPlayer ? seekerStr + " " : "";
+                    _cachedNukes.Add(new ThreatEntry { Text = $"{targetTxt}[{sector}] Nuke | Spd:{spd:F0}km/h | ToF:{tof:F0}s", MinTof = tof, BlinkRate = 10f });
+                }
+                else if (t.IsLaunched && t.IsTargetingPlayer && !t.IsNuke)
+                {
+                    _cachedIncomingMissileCount++;
+                    float tof = GetToF(t.ThreatUnit);
+                    float spd = t.ThreatUnit.rb != null ? t.ThreatUnit.rb.velocity.magnitude * 3.6f : 0f;
+                    if (tof < _cachedGlobalMinTof) _cachedGlobalMinTof = tof;
+                    float rate = Mathf.Clamp(20f / Mathf.Max(1f, tof), 2f, 15f);
+                    string seekerStr = !string.IsNullOrEmpty(t.SeekerType) ? $"[{t.SeekerType}]" : "[UNK]";
+                    _cachedMissiles.Add(new ThreatEntry { Text = $"{seekerStr} [{sector}] Msle | Spd:{spd:F0}km/h | ToF:{tof:F0}s", MinTof = tof, BlinkRate = rate });
+                }
+            }
+
+            _displayCacheReady = true;
+        }
+
         private void OnGUI()
         {
             if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "GameWorld") return;
@@ -121,176 +254,65 @@ namespace FemboiTomboi
 
                 bgStyle = new GUIStyle();
                 bgStyle.normal.background = bgTex;
+
+                // Build derived styles ONCE here
+                _mapStyle      = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperLeft };
+                _sarStyle      = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperLeft };
+                _centeredStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperCenter };
+                _sarStyle.normal.textColor = Color.white;
             }
 
             bool mapOpen = MapTracker.IsMapOpen;
             float screenW = Screen.width;
             float screenH = Screen.height;
 
-            // 1. Draw Map Full Screen Objectives (Top Left)
-            if (mapOpen)
+            // 1. Draw Map Full Screen Objectives (Top Left) — zero allocation, reads cached data
+            if (mapOpen && _displayCacheReady)
             {
                 float mapWidth = 380f;
                 float mapHeight = 110f;
-                float mapX = 20f; // Top left
-                float mapBaseY = 20f; // Top left
-                var dynamicObjectives = new List<(string Text, int Priority)>(); // 0=normal, 1=high, 2=critical
+                float mapX = 20f;
+                float mapBaseY = 20f;
 
-                var validSpotted = previouslySpottedAircraft.Where(u => u != null && u.gameObject != null && u.gameObject.activeInHierarchy && !u.disabled).ToList();
-                if (validSpotted.Count > 0)
+                if (_cachedObjectives.Count > 0)
                 {
-                    var groupedBySector = validSpotted.GroupBy(u => GetSector(u.transform.position)).ToList();
-                    
-                    foreach (var sectorGroup in groupedBySector)
-                    {
-                        var groupedByName = sectorGroup.GroupBy(u => GetCleanUnitName(u));
-                        List<string> targetStrings = new List<string>();
-                        foreach (var nameGroup in groupedByName)
-                        {
-                            int count = nameGroup.Count();
-                            if (count > 1) targetStrings.Add($"{count}x {nameGroup.Key}");
-                            else targetStrings.Add(nameGroup.Key);
-                        }
-                        
-                        string targetDesc = string.Join(" ; ", targetStrings);
-                        string locationStr = "Sector " + sectorGroup.Key;
-                        string msg = $"{prefixAir}:\nActive Tasking: CAP\nTarget: {targetDesc} at {locationStr}.\nExecute when ready.";
-                        dynamicObjectives.Add((msg, 0));
-                    }
-                }
-                
-                var validSpottedAD = previouslySpottedAirDefenses.Where(u => u != null && u.gameObject != null && u.gameObject.activeInHierarchy && !u.disabled).ToList();
-                if (validSpottedAD.Count > 0)
-                {
-                    var groupedBySector = validSpottedAD.GroupBy(u => GetSector(u.transform.position)).ToList();
-                    foreach (var sectorGroup in groupedBySector)
-                    {
-                        var groupedByName = sectorGroup.GroupBy(u => GetCleanUnitName(u));
-                        List<string> targetStrings = new List<string>();
-                        foreach (var nameGroup in groupedByName)
-                        {
-                            int count = nameGroup.Count();
-                            if (count > 1) targetStrings.Add($"{count}x {nameGroup.Key}");
-                            else targetStrings.Add(nameGroup.Key);
-                        }
-                        
-                        string targetDesc = string.Join(" ; ", targetStrings);
-                        string locationStr = "Sector " + sectorGroup.Key;
-                        string msg = $"{prefixAir}:\nActive Tasking: SEAD/DEAD\nTarget: {targetDesc} at {locationStr}.\nExecute when ready.";
-                        dynamicObjectives.Add((msg, 0));
-                    }
-                }
-
-                var validSpottedCAS = previouslySpottedCAS.Where(u => u != null && u.gameObject != null && u.gameObject.activeInHierarchy && !u.disabled).ToList();
-                if (validSpottedCAS.Count > 0)
-                {
-                    var groupedBySector = validSpottedCAS.GroupBy(u => GetSector(u.transform.position)).ToList();
-                    foreach (var sectorGroup in groupedBySector)
-                    {
-                        var groupedByName = sectorGroup.GroupBy(u => GetCleanUnitName(u));
-                        List<string> targetStrings = new List<string>();
-                        foreach (var nameGroup in groupedByName)
-                        {
-                            int count = nameGroup.Count();
-                            if (count > 1) targetStrings.Add($"{count}x {nameGroup.Key}");
-                            else targetStrings.Add(nameGroup.Key);
-                        }
-                        
-                        string targetDesc = string.Join(" ; ", targetStrings);
-                        string locationStr = "Sector " + sectorGroup.Key;
-                        string msg = $"{prefixArmy}:\nActive Tasking: CAS\nTarget: {targetDesc} at {locationStr}.\nExecute when ready.";
-                        dynamicObjectives.Add((msg, 1));
-                    }
-                }
-
-                var validSpottedIntercept = previouslySpottedIntercept.Where(u => u != null && u.gameObject != null && u.gameObject.activeInHierarchy && !u.disabled).ToList();
-                if (validSpottedIntercept.Count > 0)
-                {
-                    var groupedBySector = validSpottedIntercept.GroupBy(u => GetSector(u.transform.position)).ToList();
-                    foreach (var sectorGroup in groupedBySector)
-                    {
-                        var groupedByName = sectorGroup.GroupBy(u => GetCleanUnitName(u));
-                        List<string> targetStrings = new List<string>();
-                        foreach (var nameGroup in groupedByName)
-                        {
-                            int count = nameGroup.Count();
-                            if (count > 1) targetStrings.Add($"{count}x {nameGroup.Key}");
-                            else targetStrings.Add(nameGroup.Key);
-                        }
-                        
-                        string targetDesc = string.Join(" ; ", targetStrings);
-                        string locationStr = "Sector " + sectorGroup.Key;
-                        string msg = $"{prefixArmy}:\nActive Tasking: INTERCEPT\nTarget: {targetDesc} at {locationStr}.\nExecute when ready.";
-                        dynamicObjectives.Add((msg, 1)); // Priority 1 so it's yellow instead of flashing red
-                    }
-                }
-
-                if (dynamicObjectives.Count > 0 || activeThreats.Any(t => t.IsTargetingAirbase && t.ThreatUnit != null && t.ThreatUnit.gameObject.activeInHierarchy))
-                {
-                    // Group Airbase Threats
-                    var airbaseThreats = activeThreats.Where(t => t.IsTargetingAirbase && t.ThreatUnit != null && t.ThreatUnit.gameObject.activeInHierarchy).ToList();
-                    var groupedAirbaseThreats = airbaseThreats.GroupBy(t => new { Sector = GetSector(t.ThreatUnit.transform.position), Target = t.TargetName }).ToList();
-                    
-                    foreach (var group in groupedAirbaseThreats)
-                    {
-                        bool hasNuke = group.Any(t => t.IsNuke);
-                        string threatType = hasNuke ? "Nuclear Strike" : "Incoming";
-                        string priorityText = hasNuke ? "CRITICAL" : "HIGH";
-                        string prefix = group.FirstOrDefault()?.TargetPrefix ?? prefixArmy;
-                        string msg = $"{prefix}:\nActive Tasking: INTERCEPT\nTarget: {threatType} for {group.Key.Target} on Sector {group.Key.Sector}.\nPriority: {priorityText}";
-                        dynamicObjectives.Add((msg, hasNuke ? 2 : 1));
-                    }
-
-                    var finalObjectives = dynamicObjectives.OrderByDescending(o => o.Priority).Take(7).ToList();
-
-                    GUIStyle mapStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperLeft };
                     GUI.Box(new Rect(mapX - 10, mapBaseY - 10, mapWidth + 20, 40), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(mapX, mapBaseY - 5, mapWidth, 30), "ACTIVE PRIORITY OBJECTIVES", mapStyle);
+                    GUI.Label(new Rect(mapX, mapBaseY - 5, mapWidth, 30), "ACTIVE PRIORITY OBJECTIVES", _mapStyle);
 
-                    for (int i = 0; i < finalObjectives.Count; i++)
+                    bool isObjRed = (Time.time * 10f) % 1f < 0.5f;
+                    for (int i = 0; i < _cachedObjectives.Count; i++)
                     {
                         float y = mapBaseY + 40f + (i * (mapHeight + 10f));
-                        GUIStyle itemStyle = new GUIStyle(mapStyle);
-                        if (finalObjectives[i].Priority == 1)
-                            itemStyle.normal.textColor = Color.yellow;
-                        else if (finalObjectives[i].Priority == 2)
-                        {
-                            bool isObjRed = (Time.time * 10f) % 1f < 0.5f;
-                            itemStyle.normal.textColor = isObjRed ? Color.red : Color.yellow;
-                        }
+                        int prio = _cachedObjectives[i].Priority;
+                        if (prio == 0)      _mapStyle.normal.textColor = messageStyle.normal.textColor;
+                        else if (prio == 1) _mapStyle.normal.textColor = Color.yellow;
+                        else                _mapStyle.normal.textColor = isObjRed ? Color.red : Color.yellow;
 
                         GUI.Box(new Rect(mapX - 10, y - 10, mapWidth + 20, mapHeight + 20), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(mapX, y, mapWidth, mapHeight), finalObjectives[i].Text, itemStyle);
+                        GUI.Label(new Rect(mapX, y, mapWidth, mapHeight), _cachedObjectives[i].Text, _mapStyle);
                     }
+                    // Restore base color
+                    _mapStyle.normal.textColor = messageStyle.normal.textColor;
                 }
 
-                // Add SAR Box (Bottom Left)
+                // SAR Box (Bottom Left)
                 GameManager.GetLocalAircraft(out Aircraft localAc);
                 if (localAc != null && localAc.NetworkHQ != null && cachedNearestPilot != null && cachedNearestPilot.gameObject.activeInHierarchy && !cachedNearestPilot.disabled)
                 {
                     Unit nearestPilot = cachedNearestPilot;
                     float minPilotDist = Vector3.Distance(localAc.transform.position, nearestPilot.transform.position);
-                    
-                    if (nearestPilot != null)
-                    {
-                        Vector3 dirToPilot = nearestPilot.transform.position - localAc.transform.position;
-                        float bearing = Vector3.SignedAngle(Vector3.forward, Vector3.ProjectOnPlane(dirToPilot, Vector3.up), Vector3.up);
-                        if (bearing < 0) bearing += 360f;
-                        
-                        float distanceNm = minPilotDist / 1852f; // NM
-                        
-                        GUIStyle sarStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperLeft };
-                        sarStyle.normal.textColor = Color.white;
-                        
-                        float sarWidth = 380f;
-                        float sarHeight = 60f;
-                        float sarX = 20f;
-                        float sarY = screenH - sarHeight - 20f; // Bottom left
-                        
-                        string msg = $"{prefixAir}:\nNearest Disembarked Pilot: {bearing:F0}° at {distanceNm:F1} NM";
-                        GUI.Box(new Rect(sarX - 10, sarY - 10, sarWidth + 20, sarHeight + 20), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(sarX, sarY, sarWidth, sarHeight), msg, sarStyle);
-                    }
+                    Vector3 dirToPilot = nearestPilot.transform.position - localAc.transform.position;
+                    float bearing = Vector3.SignedAngle(Vector3.forward, Vector3.ProjectOnPlane(dirToPilot, Vector3.up), Vector3.up);
+                    if (bearing < 0) bearing += 360f;
+                    float distanceNm = minPilotDist / 1852f;
+
+                    float sarWidth = 380f;
+                    float sarHeight = 60f;
+                    float sarX = 20f;
+                    float sarY = screenH - sarHeight - 20f;
+                    string sarMsg = $"{prefixAir}:\nNearest Disembarked Pilot: {bearing:F0}° at {distanceNm:F1} NM";
+                    GUI.Box(new Rect(sarX - 10, sarY - 10, sarWidth + 20, sarHeight + 20), GUIContent.none, bgStyle);
+                    GUI.Label(new Rect(sarX, sarY, sarWidth, sarHeight), sarMsg, _sarStyle);
                 }
             }
 
@@ -303,137 +325,87 @@ namespace FemboiTomboi
                 float height = 110f; 
                 float x = (screenW - width) / 2f; // Top Center
                 float baseY = 20f;
-                GUIStyle centeredStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperCenter };
+                bool isMsgRed = (Time.time * 6f) % 1f < 0.5f;
 
                 for (int i = 0; i < messageLog.Count; i++)
                 {
                     int reverseIndex = messageLog.Count - 1 - i; // Newest at top
                     float y = baseY + (reverseIndex * (height + 10f));
 
-                    var baseColor = messageStyle.normal.textColor;
+                    Color baseColor;
                     if (messageLog[i].Priority == 1) baseColor = Color.yellow;
-                    else if (messageLog[i].Priority == 2) 
-                    {
-                        bool isMsgRed = (Time.time * 6f) % 1f < 0.5f;
-                        baseColor = isMsgRed ? Color.red : Color.yellow;
-                    }
+                    else if (messageLog[i].Priority == 2) baseColor = isMsgRed ? Color.red : Color.yellow;
+                    else baseColor = messageStyle.normal.textColor;
 
                     float elapsed = Time.time - messageLog[i].Timestamp;
                     float totalDur = messageLog[i].ExpirationTime - messageLog[i].Timestamp;
                     baseColor.a = Mathf.Clamp01(1f - (elapsed / totalDur));
-                    centeredStyle.normal.textColor = baseColor;
+                    _centeredStyle.normal.textColor = baseColor;
 
                     GUI.Box(new Rect(x - 10, y - 10, width + 20, height + 20), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(x, y, width, height), messageLog[i].Text, centeredStyle);
+                    GUI.Label(new Rect(x, y, width, height), messageLog[i].Text, _centeredStyle);
                 }
-
-                var restore = messageStyle.normal.textColor;
-                restore.a = 1f;
-                messageStyle.normal.textColor = restore;
             }
 
-            // 3. Nuke Threats Overlay (Top Right, visible everywhere)
-            if (activeThreats.Count > 0)
+            // 3. Nuke/Missile Threats Overlay (Top Right) — zero allocation, reads cached data
+            if (_displayCacheReady && (_cachedCarriers.Count > 0 || _cachedNukes.Count > 0 || _cachedMissiles.Count > 0))
             {
-                var validThreats = activeThreats.Where(t => t != null && t.ThreatUnit != null && t.ThreatUnit.gameObject != null).ToList();
-                var carriers = validThreats.Where(t => t.IsAircraft).ToList();
-                var launchedNukes = validThreats.Where(t => t.IsLaunched && t.IsNuke).ToList();
-                var incomingMissiles = validThreats.Where(t => t.IsLaunched && t.IsTargetingPlayer && !t.IsNuke).ToList();
-
-                var groupedCarriers = carriers.GroupBy(t => new { Sector = GetSector(t.ThreatUnit.transform.position), Name = GetCleanUnitName(t.ThreatUnit), Fac = GetFactionName(t.ThreatUnit.gameObject.name) }).ToList();
-                var groupedNukes = launchedNukes.GroupBy(t => new { Sector = GetSector(t.ThreatUnit.transform.position), TargetingPlayer = t.IsTargetingPlayer }).ToList();
-                var groupedMissiles = incomingMissiles.GroupBy(t => new { Sector = GetSector(t.ThreatUnit.transform.position) }).ToList();
-
                 float totalHeight = 0f;
-                if (groupedCarriers.Count > 0) totalHeight += 40f + (groupedCarriers.Count * 30f);
-                if (groupedNukes.Count > 0) totalHeight += 40f + (groupedNukes.Count * 30f) + (groupedCarriers.Count > 0 ? 10f : 0f);
-                if (groupedMissiles.Count > 0) totalHeight += 40f + (groupedMissiles.Count * 30f) + ((groupedCarriers.Count > 0 || groupedNukes.Count > 0) ? 10f : 0f);
+                if (_cachedCarriers.Count  > 0) totalHeight += 40f + (_cachedCarriers.Count  * 30f);
+                if (_cachedNukes.Count     > 0) totalHeight += 40f + (_cachedNukes.Count     * 30f) + (_cachedCarriers.Count > 0 ? 10f : 0f);
+                if (_cachedMissiles.Count  > 0) totalHeight += 40f + (_cachedMissiles.Count  * 30f) + ((_cachedCarriers.Count > 0 || _cachedNukes.Count > 0) ? 10f : 0f);
 
                 float currentY = mapOpen ? 20f : (screenH - totalHeight) / 2f;
-                bool isNukeRed = (Time.time * 10f) % 1f < 0.5f; // Fast blink for nukes
+                bool isNukeRed = (Time.time * 10f) % 1f < 0.5f;
                 criticalNukeStyle.normal.textColor = isNukeRed ? Color.red : Color.yellow;
 
-                if (groupedCarriers.Count > 0)
+                if (_cachedCarriers.Count > 0)
                 {
                     GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 40), GUIContent.none, bgStyle);
                     GUI.Label(new Rect(screenW - 360, currentY, 350, 30), "WARNING: NUCLEAR CARRIERS", nukeStyle);
                     currentY += 40f;
-
-                    foreach (var group in groupedCarriers)
+                    for (int i = 0; i < _cachedCarriers.Count; i++)
                     {
-                        string facPrefix = group.Key.Fac != "Unknown Faction" ? group.Key.Fac + " " : "";
-                        int count = group.Count();
-                        string countStr = count > 1 ? $"{count}x " : "";
-                        string msg = $"[{group.Key.Sector}] {facPrefix}{countStr}{group.Key.Name}";
-                        
                         GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 30), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(screenW - 360, currentY, 350, 30), msg, nukeStyle);
+                        GUI.Label(new Rect(screenW - 360, currentY, 350, 30), _cachedCarriers[i].Text, nukeStyle);
                         currentY += 30f;
                     }
-                    if (groupedNukes.Count > 0 || groupedMissiles.Count > 0) currentY += 10f; // Gap
+                    if (_cachedNukes.Count > 0 || _cachedMissiles.Count > 0) currentY += 10f;
                 }
 
-                if (groupedNukes.Count > 0)
+                if (_cachedNukes.Count > 0)
                 {
                     GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 40), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(screenW - 360, currentY, 350, 30), $"CRITICAL: {launchedNukes.Count} NUKES INBOUND", criticalNukeStyle);
+                    GUI.Label(new Rect(screenW - 360, currentY, 350, 30), $"CRITICAL: {_cachedLaunchedNukeCount} NUKES INBOUND", criticalNukeStyle);
                     currentY += 40f;
-
-                    foreach (var group in groupedNukes)
+                    for (int i = 0; i < _cachedNukes.Count; i++)
                     {
-                        int count = group.Count();
-                        float avgSpeed = group.Average(t => t.ThreatUnit.rb != null ? t.ThreatUnit.rb.velocity.magnitude * 3.6f : 0f);
-                        float minTof = group.Min(t => GetToF(t.ThreatUnit));
-                        float maxTof = group.Max(t => GetToF(t.ThreatUnit));
-                        
-                        string seekerStr = !string.IsNullOrEmpty(group.FirstOrDefault()?.SeekerType) ? $"[{group.FirstOrDefault().SeekerType}]" : "[UNK]";
-                        string targetText = group.Key.TargetingPlayer ? $"{seekerStr} " : ""; //replace with seeker type
-                        string countStr = count > 1 ? $"{count}x Nukes" : "Nuke";
-                        string tofStr = Mathf.Approximately(minTof, maxTof) ? $"{minTof:F0}s" : $"{minTof:F0}-{maxTof:F0}s";
-                        
-                        string msg = $"{targetText}[{group.Key.Sector}] {countStr} | Spd: {avgSpeed:F0}km/h | ToF: {tofStr}";
-                        
                         GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 30), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(screenW - 360, currentY, 350, 30), msg, criticalNukeStyle);
+                        GUI.Label(new Rect(screenW - 360, currentY, 350, 30), _cachedNukes[i].Text, criticalNukeStyle);
                         currentY += 30f;
                     }
-                    if (groupedMissiles.Count > 0) currentY += 10f; // Gap
+                    if (_cachedMissiles.Count > 0) currentY += 10f;
                 }
 
-                if (groupedMissiles.Count > 0)
+                if (_cachedMissiles.Count > 0)
                 {
-                    float globalMinTof = incomingMissiles.Min(t => GetToF(t.ThreatUnit));
-                    float headerBlinkRate = Mathf.Clamp(20f / Mathf.Max(1f, globalMinTof), 2f, 15f);
+                    float headerBlinkRate = Mathf.Clamp(20f / Mathf.Max(1f, _cachedGlobalMinTof), 2f, 15f);
                     bool isHeaderRed = (Time.time * headerBlinkRate) % 1f < 0.5f;
-                    GUIStyle headerStyle = new GUIStyle(incomingStyle);
-                    headerStyle.normal.textColor = isHeaderRed ? Color.red : Color.yellow;
-
+                    incomingStyle.normal.textColor = isHeaderRed ? Color.red : Color.yellow;
                     GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 40), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(screenW - 360, currentY, 350, 30), $"WARNING: {incomingMissiles.Count} INCOMING MISSILES", headerStyle);
+                    GUI.Label(new Rect(screenW - 360, currentY, 350, 30), $"WARNING: {_cachedIncomingMissileCount} INCOMING MISSILES", incomingStyle);
                     currentY += 40f;
 
-                    foreach (var group in groupedMissiles)
+                    for (int i = 0; i < _cachedMissiles.Count; i++)
                     {
-                        int count = group.Count();
-                        float avgSpeed = group.Average(t => t.ThreatUnit.rb != null ? t.ThreatUnit.rb.velocity.magnitude * 3.6f : 0f);
-                        float minTof = group.Min(t => GetToF(t.ThreatUnit));
-                        float maxTof = group.Max(t => GetToF(t.ThreatUnit));
-                        
-                        string countStr = count > 1 ? $"{count}x Msles" : "Msle";
-                        string seekerStr = !string.IsNullOrEmpty(group.FirstOrDefault()?.SeekerType) ? $"[{group.FirstOrDefault().SeekerType}]" : "[UNK]";
-                        string tofStr = Mathf.Approximately(minTof, maxTof) ? $"{minTof:F0}s" : $"{minTof:F0}-{maxTof:F0}s";
-                        
-                        string msg = $"{seekerStr} [{group.Key.Sector}] {countStr} | Spd: {avgSpeed:F0}km/h | ToF: {tofStr}";
-                        
-                        float blinkRate = Mathf.Clamp(20f / Mathf.Max(1f, minTof), 2f, 15f);
-                        bool isRed = (Time.time * blinkRate) % 1f < 0.5f;
-                        GUIStyle itemStyle = new GUIStyle(incomingStyle);
-                        itemStyle.normal.textColor = isRed ? Color.red : Color.yellow;
-
+                        bool isRed = (Time.time * _cachedMissiles[i].BlinkRate) % 1f < 0.5f;
+                        incomingStyle.normal.textColor = isRed ? Color.red : Color.yellow;
                         GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 30), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(screenW - 360, currentY, 350, 30), msg, itemStyle);
+                        GUI.Label(new Rect(screenW - 360, currentY, 350, 30), _cachedMissiles[i].Text, incomingStyle);
                         currentY += 30f;
                     }
+                    // Restore orange
+                    incomingStyle.normal.textColor = new Color(1f, 0.4f, 0f);
                 }
             }
         }
