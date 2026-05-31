@@ -30,40 +30,53 @@ namespace FemboiTomboi
         private Dictionary<Unit, float> pendingSpottedCAS = new Dictionary<Unit, float>();
         private Dictionary<Unit, float> pendingSpottedIntercept = new Dictionary<Unit, float>();
 
+        private Dictionary<Unit, bool> _seadCache = new Dictionary<Unit, bool>();
+
         private bool IsSEADTarget(Unit selected)
         {
+            if (selected == null) return false;
+            if (_seadCache.TryGetValue(selected, out bool cached)) return cached;
+
             bool isSEAD = false;
-            var defField = selected.GetType().GetField("definition", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-            if (defField == null) defField = selected.GetType().BaseType?.GetField("definition", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-            if (defField != null)
+            try
             {
-                var def = defField.GetValue(selected);
-                if (def != null)
+                var defField = selected.GetType().GetField("definition", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                if (defField == null) defField = selected.GetType().BaseType?.GetField("definition", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                if (defField != null)
                 {
-                    var typeIdField = def.GetType().GetField("typeIdentity", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-                    var roleIdField = def.GetType().GetField("roleIdentity", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-                    if (typeIdField != null && roleIdField != null)
+                    var def = defField.GetValue(selected);
+                    if (def != null)
                     {
-                        var typeId = typeIdField.GetValue(def);
-                        var roleId = roleIdField.GetValue(def);
-                        if (typeId != null && roleId != null)
+                        var typeIdField = def.GetType().GetField("typeIdentity", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                        var roleIdField = def.GetType().GetField("roleIdentity", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                        if (typeIdField != null && roleIdField != null)
                         {
-                            var radarField = typeId.GetType().GetField("radar", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-                            var antiMissileField = roleId.GetType().GetField("antiMissile", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-                            if (radarField != null && antiMissileField != null)
+                            var typeId = typeIdField.GetValue(def);
+                            var roleId = roleIdField.GetValue(def);
+                            if (typeId != null && roleId != null)
                             {
-                                float rScore = (float)radarField.GetValue(typeId);
-                                float amScore = (float)antiMissileField.GetValue(roleId);
-                                if (rScore > 0f || amScore > 0f) isSEAD = true;
+                                var radarField = typeId.GetType().GetField("radar", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                                var antiMissileField = roleId.GetType().GetField("antiMissile", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                                if (radarField != null && antiMissileField != null)
+                                {
+                                    float rScore = (float)radarField.GetValue(typeId);
+                                    float amScore = (float)antiMissileField.GetValue(roleId);
+                                    if (rScore > 0f || amScore > 0f) isSEAD = true;
+                                }
                             }
                         }
                     }
                 }
             }
+            catch { }
             
-            string n = selected.gameObject.name.ToLower();
-            isSEAD = isSEAD || n.Contains("sam") || n.Contains("radar") || n.Contains("cram") || n.Contains("lads") || n.Contains("spaag") || n.Contains("_aa") || n.EndsWith(" aa") || n.Contains("-aa");
+            if (!isSEAD)
+            {
+                string n = selected.gameObject.name.ToLowerInvariant();
+                isSEAD = n.Contains("sam") || n.Contains("radar") || n.Contains("cram") || n.Contains("lads") || n.Contains("spaag") || n.Contains("_aa") || n.EndsWith(" aa") || n.Contains("-aa");
+            }
             
+            _seadCache[selected] = isSEAD;
             return isSEAD;
         }
 
@@ -73,12 +86,22 @@ namespace FemboiTomboi
 
             while (true)
             {
-                yield return new WaitForSeconds(1f);
+                yield return new WaitForSeconds(15f);
 
                 GameManager.GetLocalAircraft(out Aircraft localAc);
                 if (localAc == null || localAc.NetworkHQ == null) continue;
 
                 var playerHQ = localAc.NetworkHQ;
+
+                // Pre-filter friendly ground units to avoid O(N^2) complexity and LINQ allocations inside the loop
+                List<Unit> friendlyGroundUnits = new List<Unit>();
+                foreach (var f in UnitTracker.ActiveUnits)
+                {
+                    if (f != null && f.gameObject.activeInHierarchy && !f.disabled && (f is GroundVehicle || f is Building) && f.NetworkHQ == playerHQ)
+                    {
+                        friendlyGroundUnits.Add(f);
+                    }
+                }
 
                 foreach (var u in UnitTracker.ActiveUnits)
                 {
@@ -88,7 +111,17 @@ namespace FemboiTomboi
                     {
                         if (playerHQ.IsTargetPositionAccurate(u, 20f))
                         {
-                            bool nearFriendlyGround = UnitTracker.ActiveUnits.Any(f => f != null && f.gameObject.activeInHierarchy && !f.disabled && (f is GroundVehicle || f is Building) && f.NetworkHQ == playerHQ && Vector3.Distance(f.transform.position, u.transform.position) < 15000f);
+                            bool nearFriendlyGround = false;
+                            float sqrDistTarget = 15000f * 15000f;
+                            foreach (var f in friendlyGroundUnits)
+                            {
+                                if ((f.transform.position - u.transform.position).sqrMagnitude < sqrDistTarget)
+                                {
+                                    nearFriendlyGround = true;
+                                    break;
+                                }
+                            }
+
                             if (nearFriendlyGround)
                             {
                                 if (!previouslySpottedIntercept.Contains(u) && !pendingSpottedIntercept.ContainsKey(u))
@@ -121,7 +154,17 @@ namespace FemboiTomboi
                         }
                         else
                         {
-                            bool nearFriendlyGround = UnitTracker.ActiveUnits.Any(f => f != null && f.gameObject.activeInHierarchy && !f.disabled && (f is GroundVehicle || f is Building) && f.NetworkHQ == playerHQ && Vector3.Distance(f.transform.position, u.transform.position) < 8000f);
+                            bool nearFriendlyGround = false;
+                            float sqrDistTarget = 8000f * 8000f;
+                            foreach (var f in friendlyGroundUnits)
+                            {
+                                if ((f.transform.position - u.transform.position).sqrMagnitude < sqrDistTarget)
+                                {
+                                    nearFriendlyGround = true;
+                                    break;
+                                }
+                            }
+
                             if (nearFriendlyGround)
                             {
                                 if (!previouslySpottedCAS.Contains(u) && !pendingSpottedCAS.ContainsKey(u))

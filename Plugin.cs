@@ -63,7 +63,7 @@ namespace FemboiTomboi
 
             while (true)
             {
-                yield return new WaitForSeconds(1f);
+                yield return new WaitForSeconds(15f);
                 
                 GameManager.GetLocalAircraft(out Aircraft localAc);
                 if (localAc == null || localAc.NetworkHQ == null) 
@@ -75,31 +75,16 @@ namespace FemboiTomboi
                 Unit nearest = null;
                 float minPilotDist = float.MaxValue;
                 
-                foreach (var u in UnitTracker.ActiveUnits)
+                foreach (var u in UnitTracker.ActivePilots)
                 {
                     if (u == null || !u.gameObject.activeInHierarchy || u.disabled) continue;
                     if (u.NetworkHQ != localAc.NetworkHQ) continue;
                     
-                    bool isPilot = false;
-                    string n = u.gameObject.name;
-                    if (n != null && (n.IndexOf("pilot", StringComparison.OrdinalIgnoreCase) >= 0 || n.IndexOf("eject", StringComparison.OrdinalIgnoreCase) >= 0))
+                    float d = Vector3.Distance(localAc.transform.position, u.transform.position);
+                    if (d < minPilotDist)
                     {
-                        isPilot = true;
-                    }
-                    else
-                    {
-                        var comps = u.GetComponentsInChildren<Component>();
-                        if (comps.Any(c => c != null && c.GetType().Name.Contains("EjectedPilot"))) isPilot = true;
-                    }
-                    
-                    if (isPilot)
-                    {
-                        float d = Vector3.Distance(localAc.transform.position, u.transform.position);
-                        if (d < minPilotDist)
-                        {
-                            minPilotDist = d;
-                            nearest = u;
-                        }
+                        minPilotDist = d;
+                        nearest = u;
                     }
                 }
                 
@@ -202,20 +187,42 @@ namespace FemboiTomboi
                 {
                     _cachedLaunchedNukeCount++;
                     float tof = GetToF(t.ThreatUnit);
-                    float spd = t.ThreatUnit.rb != null ? t.ThreatUnit.rb.velocity.magnitude * 3.6f : 0f;
+                    
+                    int oclock = 12;
+                    GameManager.GetLocalAircraft(out Aircraft localAc);
+                    if (localAc != null)
+                    {
+                        Vector3 dir = t.ThreatUnit.transform.position - localAc.transform.position;
+                        float bearing = Vector3.SignedAngle(localAc.transform.forward, dir, Vector3.up);
+                        if (bearing < 0) bearing += 360f;
+                        oclock = Mathf.RoundToInt(bearing / 30f);
+                        if (oclock == 0) oclock = 12;
+                    }
+
                     string seekerStr = !string.IsNullOrEmpty(t.SeekerType) ? $"[{t.SeekerType}]" : "[UNK]";
                     string targetTxt = t.IsTargetingPlayer ? seekerStr + " " : "";
-                    _cachedNukes.Add(new ThreatEntry { Text = $"{targetTxt}[{sector}] Nuke | Spd:{spd:F0}km/h | ToF:{tof:F0}s", MinTof = tof, BlinkRate = 10f });
+                    _cachedNukes.Add(new ThreatEntry { Text = $"{targetTxt}[{sector}] Nuke | Dir:{oclock} o'clock | ToF:{tof:F0}s", MinTof = tof, BlinkRate = 10f });
                 }
                 else if (t.IsLaunched && t.IsTargetingPlayer && !t.IsNuke)
                 {
                     _cachedIncomingMissileCount++;
                     float tof = GetToF(t.ThreatUnit);
-                    float spd = t.ThreatUnit.rb != null ? t.ThreatUnit.rb.velocity.magnitude * 3.6f : 0f;
                     if (tof < _cachedGlobalMinTof) _cachedGlobalMinTof = tof;
-                    float rate = Mathf.Clamp(20f / Mathf.Max(1f, tof), 2f, 15f);
+                    float rate = Mathf.Clamp(10f / Mathf.Max(0.5f, tof), 0.5f, 15f);
+                    
+                    int oclock = 12;
+                    GameManager.GetLocalAircraft(out Aircraft localAc);
+                    if (localAc != null)
+                    {
+                        Vector3 dir = t.ThreatUnit.transform.position - localAc.transform.position;
+                        float bearing = Vector3.SignedAngle(localAc.transform.forward, dir, Vector3.up);
+                        if (bearing < 0) bearing += 360f;
+                        oclock = Mathf.RoundToInt(bearing / 30f);
+                        if (oclock == 0) oclock = 12;
+                    }
+
                     string seekerStr = !string.IsNullOrEmpty(t.SeekerType) ? $"[{t.SeekerType}]" : "[UNK]";
-                    _cachedMissiles.Add(new ThreatEntry { Text = $"{seekerStr} [{sector}] Msle | Spd:{spd:F0}km/h | ToF:{tof:F0}s", MinTof = tof, BlinkRate = rate });
+                    _cachedMissiles.Add(new ThreatEntry { Text = $"{seekerStr} [{sector}] Msle | Dir:{oclock} o'clock | ToF:{tof:F0}s", MinTof = tof, BlinkRate = rate });
                 }
             }
 
@@ -361,13 +368,13 @@ namespace FemboiTomboi
 
                 if (_cachedCarriers.Count > 0)
                 {
-                    GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 40), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(screenW - 360, currentY, 350, 30), "WARNING: NUCLEAR CARRIERS", nukeStyle);
+                    GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 40), GUIContent.none, bgStyle);
+                    GUI.Label(new Rect(screenW - 410, currentY, 400, 30), "WARNING: NUCLEAR CARRIERS", nukeStyle);
                     currentY += 40f;
                     for (int i = 0; i < _cachedCarriers.Count; i++)
                     {
-                        GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 30), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(screenW - 360, currentY, 350, 30), _cachedCarriers[i].Text, nukeStyle);
+                        GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 30), GUIContent.none, bgStyle);
+                        GUI.Label(new Rect(screenW - 410, currentY, 400, 30), _cachedCarriers[i].Text, nukeStyle);
                         currentY += 30f;
                     }
                     if (_cachedNukes.Count > 0 || _cachedMissiles.Count > 0) currentY += 10f;
@@ -375,13 +382,13 @@ namespace FemboiTomboi
 
                 if (_cachedNukes.Count > 0)
                 {
-                    GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 40), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(screenW - 360, currentY, 350, 30), $"CRITICAL: {_cachedLaunchedNukeCount} NUKES INBOUND", criticalNukeStyle);
+                    GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 40), GUIContent.none, bgStyle);
+                    GUI.Label(new Rect(screenW - 410, currentY, 400, 30), $"CRITICAL: {_cachedLaunchedNukeCount} NUKES INBOUND", criticalNukeStyle);
                     currentY += 40f;
                     for (int i = 0; i < _cachedNukes.Count; i++)
                     {
-                        GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 30), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(screenW - 360, currentY, 350, 30), _cachedNukes[i].Text, criticalNukeStyle);
+                        GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 30), GUIContent.none, bgStyle);
+                        GUI.Label(new Rect(screenW - 410, currentY, 400, 30), _cachedNukes[i].Text, criticalNukeStyle);
                         currentY += 30f;
                     }
                     if (_cachedMissiles.Count > 0) currentY += 10f;
@@ -389,19 +396,19 @@ namespace FemboiTomboi
 
                 if (_cachedMissiles.Count > 0)
                 {
-                    float headerBlinkRate = Mathf.Clamp(20f / Mathf.Max(1f, _cachedGlobalMinTof), 2f, 15f);
+                    float headerBlinkRate = Mathf.Clamp(10f / Mathf.Max(0.5f, _cachedGlobalMinTof), 0.5f, 15f);
                     bool isHeaderRed = (Time.time * headerBlinkRate) % 1f < 0.5f;
                     incomingStyle.normal.textColor = isHeaderRed ? Color.red : Color.yellow;
-                    GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 40), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(screenW - 360, currentY, 350, 30), $"WARNING: {_cachedIncomingMissileCount} INCOMING MISSILES", incomingStyle);
+                    GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 40), GUIContent.none, bgStyle);
+                    GUI.Label(new Rect(screenW - 410, currentY, 400, 30), $"WARNING: {_cachedIncomingMissileCount} INCOMING MISSILES", incomingStyle);
                     currentY += 40f;
 
                     for (int i = 0; i < _cachedMissiles.Count; i++)
                     {
                         bool isRed = (Time.time * _cachedMissiles[i].BlinkRate) % 1f < 0.5f;
                         incomingStyle.normal.textColor = isRed ? Color.red : Color.yellow;
-                        GUI.Box(new Rect(screenW - 370, currentY - 5, 360, 30), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(screenW - 360, currentY, 350, 30), _cachedMissiles[i].Text, incomingStyle);
+                        GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 30), GUIContent.none, bgStyle);
+                        GUI.Label(new Rect(screenW - 410, currentY, 400, 30), _cachedMissiles[i].Text, incomingStyle);
                         currentY += 30f;
                     }
                     // Restore orange
@@ -415,19 +422,38 @@ namespace FemboiTomboi
     public static class UnitTracker
     {
         public static HashSet<Unit> ActiveUnits = new HashSet<Unit>();
+        public static HashSet<Unit> ActivePilots = new HashSet<Unit>();
+        private static Type EjectedPilotType = AccessTools.TypeByName("EjectedPilot");
 
         [HarmonyPatch("Awake")]
         [HarmonyPostfix]
         static void AwakePostfix(Unit __instance)
         {
-            if (__instance != null) ActiveUnits.Add(__instance);
+            if (__instance != null)
+            {
+                ActiveUnits.Add(__instance);
+                
+                string n = __instance.name;
+                if (n != null && (n.IndexOf("pilot", StringComparison.OrdinalIgnoreCase) >= 0 || n.IndexOf("eject", StringComparison.OrdinalIgnoreCase) >= 0))
+                {
+                    ActivePilots.Add(__instance);
+                }
+                else if (EjectedPilotType != null && __instance.GetComponentInChildren(EjectedPilotType, true) != null)
+                {
+                    ActivePilots.Add(__instance);
+                }
+            }
         }
 
         [HarmonyPatch("OnDestroy")]
         [HarmonyPostfix]
         static void OnDestroyPostfix(Unit __instance)
         {
-            if (__instance != null) ActiveUnits.Remove(__instance);
+            if (__instance != null)
+            {
+                ActiveUnits.Remove(__instance);
+                ActivePilots.Remove(__instance);
+            }
         }
     }
 

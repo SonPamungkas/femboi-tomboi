@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using HarmonyLib;
 
 namespace FemboiTomboi
 {
@@ -25,6 +26,7 @@ namespace FemboiTomboi
         private HashSet<Unit> groundNukesSpotted = new HashSet<Unit>();
         private HashSet<Unit> airbaseThreatsSpotted = new HashSet<Unit>();
         private List<Transform> _transformCache = new List<Transform>(128);
+        private List<MonoBehaviour> _monoCache = new List<MonoBehaviour>(64);
         private static Dictionary<Type, System.Reflection.FieldInfo[]> femboiTomboiNukeTypeCache = new Dictionary<Type, System.Reflection.FieldInfo[]>();
 
         private IEnumerator NukeScannerLoop()
@@ -49,7 +51,8 @@ namespace FemboiTomboi
                 {
                     if (u == null || !u.gameObject.activeInHierarchy) continue;
                     
-                    bool isMissile = u.gameObject.GetComponent("Missile") != null || u.gameObject.GetComponent("Bomb") != null;
+                    bool isMissile = u is Missile || u.GetType().Name == "Bomb";
+
                     bool hasNukeSystem = false;
                     bool targetsPlayer = false;
                     bool targetsAirbase = false;
@@ -59,7 +62,7 @@ namespace FemboiTomboi
 
                     if (isMissile)
                     {
-                        var m = u.gameObject.GetComponent("Missile") as Missile;
+                        var m = u as Missile;
                         if (m != null)
                         {
                             if (playerID.IsValid && m.targetID == playerID)
@@ -68,17 +71,27 @@ namespace FemboiTomboi
                             }
                             else
                             {
-                                // See if target is an Airbase via reflection (since we know the 'target' field exists)
-                                var targetField = m.GetType().GetField("target", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                                if (targetField != null)
+                                // See if target is an Airbase via reflection
+                                if (!_missileTargetRefInit)
                                 {
-                                    var targetUnit = targetField.GetValue(m) as Unit;
-                                    if (targetUnit != null && targetUnit.GetComponent<Airbase>() != null)
-                                    {
-                                        targetsAirbase = true;
-                                        airbaseTargetName = GetCleanUnitName(targetUnit);
-                                        targetCommandPrefix = GetCommandPrefix(targetUnit);
-                                    }
+                                    Type t = AccessTools.TypeByName("Missile");
+                                    if (t != null) _missileTargetRef = AccessTools.FieldRefAccess<Unit>(t, "target");
+                                    _missileTargetRefInit = true;
+                                }
+                                
+                                Unit targetUnit = null;
+                                if (_missileTargetRef != null) targetUnit = _missileTargetRef(m);
+                                else
+                                {
+                                    var targetField = m.GetType().GetField("target", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                                    if (targetField != null) targetUnit = targetField.GetValue(m) as Unit;
+                                }
+                                
+                                if (targetUnit != null && targetUnit.GetComponent<Airbase>() != null)
+                                {
+                                    targetsAirbase = true;
+                                    airbaseTargetName = GetCleanUnitName(targetUnit);
+                                    targetCommandPrefix = GetCommandPrefix(targetUnit);
                                 }
                             }
                             
@@ -118,80 +131,33 @@ namespace FemboiTomboi
                         }
                     }
 
-                    // Optimization: Cache fields per type to avoid reflection overhead every second + Helper function to dynamically check for nuclear payload
-                    bool CheckForNuke(object obj)
-                    {
-                        if (obj == null) return false;
-                        Type objType = obj.GetType();
-                        
-                        System.Reflection.FieldInfo[] fields;
-                        if (!femboiTomboiNukeTypeCache.TryGetValue(objType, out fields))
-                        {
-                            fields = objType.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                            femboiTomboiNukeTypeCache[objType] = fields;
-                        }
-                        
-                        foreach (var f in fields)
-                        {
-                            if (f.FieldType == typeof(float))
-                            {
-                                if (f.Name.IndexOf("yield", StringComparison.OrdinalIgnoreCase) >= 0)
-                                {
-                                    float val = (float)f.GetValue(obj);
-                                    if (val >= 1500000f) return true;
-                                }
-                            }
-                            else if (f.Name.IndexOf("kt", StringComparison.OrdinalIgnoreCase) >= 0)
-                            {
-                                object warheadObj = f.GetValue(obj);
-                                if (warheadObj != null)
-                                {
-                                    Type wType = warheadObj.GetType();
-                                    System.Reflection.FieldInfo[] wFields;
-                                    if (!femboiTomboiNukeTypeCache.TryGetValue(wType, out wFields))
-                                    {
-                                        wFields = wType.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                                        femboiTomboiNukeTypeCache[wType] = wFields;
-                                    }
-                                    
-                                    foreach (var wf in wFields)
-                                    {
-                                        if (wf.FieldType == typeof(float))
-                                        {
-                                            if (wf.Name.IndexOf("yield", StringComparison.OrdinalIgnoreCase) >= 0)
-                                            {
-                                                float val = (float)wf.GetValue(warheadObj);
-                                                if (val >= 1500000f) return true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        return false;
-                    }
-
                     if (isMissile)
                     {
-                        // Check the missile/bomb components themselves
-                        foreach (var comp in u.gameObject.GetComponents<MonoBehaviour>())
+                        u.gameObject.GetComponents<MonoBehaviour>(_monoCache);
+                        for (int i = 0; i < _monoCache.Count; i++)
                         {
-                            if (CheckForNuke(comp)) { hasNukeSystem = true; break; }
+                            if (CheckForNuke(_monoCache[i])) { hasNukeSystem = true; break; }
                         }
                     }
-                    else
+                    else if (u is Aircraft || u is GroundVehicle || u is Ship)
                     {
                         // Carrier: check children/pylons
                         u.GetComponentsInChildren<Transform>(true, _transformCache);
                         foreach (var t in _transformCache)
                         {
                             if (t == u.transform) continue;
-                            foreach (var comp in t.GetComponents<MonoBehaviour>())
+                            t.GetComponents<MonoBehaviour>(_monoCache);
+                            for (int i = 0; i < _monoCache.Count; i++)
                             {
-                                if (CheckForNuke(comp)) { hasNukeSystem = true; break; }
+                                if (CheckForNuke(_monoCache[i])) { hasNukeSystem = true; break; }
                             }
                             if (hasNukeSystem) break;
                         }
+                    }
+                    else
+                    {
+                        // Skip static buildings/other stuff to eliminate heavy reflection/component queries every second
+                        continue;
                     }
 
                     if (targetsPlayer && !hasNukeSystem)
@@ -242,27 +208,120 @@ namespace FemboiTomboi
                 groundNukesSpotted.RemoveWhere(u => u == null || !u.gameObject.activeInHierarchy);
                 airbaseThreatsSpotted.RemoveWhere(u => u == null || !u.gameObject.activeInHierarchy);
             }
+        }        private Dictionary<Component, bool> _nukeCompCache = new Dictionary<Component, bool>();
+
+        // Optimization: Cache fields per type to avoid reflection overhead every second + Helper function to dynamically check for nuclear payload
+        private bool CheckForNuke(Component obj)
+        {
+            if (obj == null) return false;
+            if (_nukeCompCache.TryGetValue(obj, out bool cached)) return cached;
+
+            bool isNuke = false;
+            try
+            {
+                Type objType = obj.GetType();
+                
+                System.Reflection.FieldInfo[] fields;
+                if (!femboiTomboiNukeTypeCache.TryGetValue(objType, out fields))
+                {
+                    fields = objType.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    femboiTomboiNukeTypeCache[objType] = fields;
+                }
+                
+                foreach (var f in fields)
+                {
+                    if (f.FieldType == typeof(float))
+                    {
+                        if (f.Name.IndexOf("yield", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            float val = (float)f.GetValue(obj);
+                            if (val >= 1500000f) { isNuke = true; break; }
+                        }
+                    }
+                    else if (f.Name.IndexOf("kt", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        object warheadObj = f.GetValue(obj);
+                        if (warheadObj != null)
+                        {
+                            Type wType = warheadObj.GetType();
+                            System.Reflection.FieldInfo[] wFields;
+                            if (!femboiTomboiNukeTypeCache.TryGetValue(wType, out wFields))
+                            {
+                                wFields = wType.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                                femboiTomboiNukeTypeCache[wType] = wFields;
+                            }
+                            
+                            foreach (var wf in wFields)
+                            {
+                                if (wf.FieldType == typeof(float))
+                                {
+                                    if (wf.Name.IndexOf("yield", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        float val = (float)wf.GetValue(warheadObj);
+                                        if (val >= 1500000f) { isNuke = true; break; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (isNuke) break;
+                }
+            }
+            catch { }
+
+            _nukeCompCache[obj] = isNuke;
+            return isNuke;
         }
+
+        private static AccessTools.FieldRef<object, Unit> _missileTargetRef;
+        private static bool _missileTargetRefInit = false;
 
         private float GetToF(Unit missile)
         {
             try
             {
-                var type = missile.GetType();
-                var targetField = type.GetField("target", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (targetField != null)
+                if (!_missileTargetRefInit)
                 {
-                    var target = targetField.GetValue(missile) as Unit;
-                    if (target != null)
+                    Type t = AccessTools.TypeByName("Missile");
+                    if (t != null) _missileTargetRef = AccessTools.FieldRefAccess<Unit>(t, "target");
+                    _missileTargetRefInit = true;
+                }
+
+                Unit target = null;
+                if (_missileTargetRef != null)
+                {
+                    target = _missileTargetRef(missile);
+                }
+                else
+                {
+                    var targetField = missile.GetType().GetField("target", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    if (targetField != null) target = targetField.GetValue(missile) as Unit;
+                }
+
+                if (target != null)
+                {
+                    Vector3 mPos = missile.transform.position;
+                    Vector3 tPos = target.transform.position;
+                    float dist = Vector3.Distance(mPos, tPos);
+                    
+                    var mRb = missile.GetComponent<Rigidbody>();
+                    var tRb = target.GetComponent<Rigidbody>();
+                    
+                    if (mRb != null && mRb.velocity.magnitude > 5f)
                     {
-                        float dist = Vector3.Distance(missile.transform.position, target.transform.position);
-                        var rb = missile.GetComponent<Rigidbody>();
-                        if (rb != null && rb.velocity.magnitude > 5f)
+                        Vector3 relVel = mRb.velocity;
+                        if (tRb != null) relVel -= tRb.velocity;
+                        
+                        Vector3 dir = (tPos - mPos).normalized;
+                        float closureRate = Vector3.Dot(relVel, dir);
+                        
+                        if (closureRate > 5f)
                         {
-                            return dist / rb.velocity.magnitude;
+                            return dist / closureRate;
                         }
-                        return dist / 300f; // Assume Mach 1 ish
+                        return dist / mRb.velocity.magnitude;
                     }
+                    return dist / 300f; // Assume Mach 1 ish
                 }
             }
             catch { }
