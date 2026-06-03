@@ -363,7 +363,7 @@ namespace FemboiTomboi
                 if (_cachedMissiles.Count  > 0) totalHeight += 40f + (_cachedMissiles.Count  * 30f) + ((_cachedCarriers.Count > 0 || _cachedNukes.Count > 0) ? 10f : 0f);
 
                 float currentY = mapOpen ? 20f : (screenH - totalHeight) / 2f;
-                bool isNukeRed = (Time.time * 10f) % 1f < 0.5f;
+                bool isNukeRed = (Time.time * 1f) % 1f < 0.5f;
                 criticalNukeStyle.normal.textColor = isNukeRed ? Color.red : Color.yellow;
 
                 if (_cachedCarriers.Count > 0)
