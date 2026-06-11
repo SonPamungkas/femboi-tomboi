@@ -170,7 +170,7 @@ namespace FemboiTomboi
                         if (!airbaseThreatsSpotted.Contains(u))
                         {
                             airbaseThreatsSpotted.Add(u);
-                            ShowCommanderMessage($"{targetCommandPrefix}: WARNING: Missile strike detected targeting {airbaseTargetName} in {GetSector(u.transform.position)}!", 20f, 1);
+                            ShowCommanderMessage($"{targetCommandPrefix}:\nWARNING: Missile Strike\nTarget: {airbaseTargetName} in Sector {GetSector(u.transform.position)}.", 20f, 1);
                         }
                     }
                     else if (hasNukeSystem)
@@ -181,7 +181,7 @@ namespace FemboiTomboi
                             if (targetsAirbase && !airbaseThreatsSpotted.Contains(u))
                             {
                                 airbaseThreatsSpotted.Add(u);
-                                ShowCommanderMessage($"{targetCommandPrefix}: CRITICAL: Nuclear strike detected targeting {airbaseTargetName} in {GetSector(u.transform.position)}!", 20f, 2);
+                                ShowCommanderMessage($"{targetCommandPrefix}:\nCRITICAL: Nuclear Strike\nTarget: {airbaseTargetName} in Sector {GetSector(u.transform.position)}.", 20f, 2);
                             }
                         }
                         else
@@ -199,7 +199,7 @@ namespace FemboiTomboi
                                     groundNukesSpotted.Add(u);
                                     string fac = GetFactionName(u.gameObject.name);
                                     string facPrefix = fac != "Unknown Faction" ? fac + " " : "";
-                                    ShowCommanderMessage($"WARNING: {facPrefix}{GetCleanUnitName(u)} detected with Nuclear Payload in {GetSector(u.transform.position)}!", 20f, 2);
+                                    ShowCommanderMessage($"{FemboiTomboiPlugin.prefixArmy}:\nWARNING: Nuclear Payload\nTarget: {facPrefix}{GetCleanUnitName(u)} in Sector {GetSector(u.transform.position)}.", 20f, 2);
                                 }
                             }
                         }

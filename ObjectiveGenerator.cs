@@ -266,7 +266,7 @@ namespace FemboiTomboi
                             
                             string targetDesc = string.Join(" ; ", targetStrings);
                             string locationStr = "Sector " + sectorGroup.Key;
-                            string msg = $"{FemboiTomboiPlugin.prefixArmy}:\nRequesting CAS!\nGround units engaged by: {targetDesc} at {locationStr}.\nRequire immediate support.";
+                            string msg = $"{FemboiTomboiPlugin.prefixArmy}:\nEmergency Tasking: CAS\nTarget: {targetDesc} at {locationStr}.\nRequire immediate support.";
                             ShowCommanderMessage(msg, 20f, 1);
                         }
 
@@ -298,7 +298,7 @@ namespace FemboiTomboi
                             
                             string targetDesc = string.Join(" ; ", targetStrings);
                             string locationStr = "Sector " + sectorGroup.Key;
-                            string msg = $"{FemboiTomboiPlugin.prefixArmy}:\nRequesting INTERCEPT!\nEnemy aircraft attacking friendly ground units: {targetDesc} at {locationStr}.";
+                            string msg = $"{FemboiTomboiPlugin.prefixArmy}:\nEmergency Tasking: INTERCEPT\nTarget: {targetDesc} at {locationStr}.\nExecute when ready.";
                             ShowCommanderMessage(msg, 20f, 1);
                         }
 

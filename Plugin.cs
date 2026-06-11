@@ -17,18 +17,18 @@ namespace FemboiTomboi
         private GUIStyle bgStyle;
         private GUIStyle nukeStyle;
         private GUIStyle criticalNukeStyle;
+        private GUIStyle criticalNukeCenterStyle;
         private GUIStyle incomingStyle;
         // Cached derived styles — built once, reused every frame
         private GUIStyle _mapStyle;
         private GUIStyle _sarStyle;
-        private GUIStyle _centeredStyle;
 
         public static string prefixAir = "MOMMY Command";
         public static string prefixArmy = "TOMBOI General";
         public static string prefixNavy = "FEMBOI Admiral";
 
         // --- Display Cache (updated by coroutine, read by OnGUI with zero alloc) ---
-        private struct ObjectiveEntry { public string Text; public int Priority; }
+        private struct ObjectiveEntry { public string Text; public int Priority; public Vector3 Position; }
         private struct ThreatEntry   { public string Text; public int Priority; public float MinTof; public float BlinkRate; }
 
         private readonly List<ObjectiveEntry> _cachedObjectives = new List<ObjectiveEntry>(16);
@@ -39,11 +39,14 @@ namespace FemboiTomboi
         private int    _cachedIncomingMissileCount = 0;
         private float  _cachedGlobalMinTof         = 99999f;
         private bool   _displayCacheReady          = false;
+        private ObjectiveEntry? _cachedClosestHighPriority = null;
 
         private void Awake()
         {
             Logger = base.Logger;
             Logger.LogInfo("FEMBOI-TOMBOI Commander plugin loaded!");
+
+            Instance = this;
 
             var harmony = new Harmony("com.femboi.tomboi");
             harmony.PatchAll();
@@ -53,6 +56,7 @@ namespace FemboiTomboi
             StartCoroutine(DatalinkSpotterLoop());
             StartCoroutine(SARScannerLoop());
             StartCoroutine(DisplayCacheLoop());
+            StartCoroutine(AttachObjectiveHUDLoop());
         }
 
         private Unit cachedNearestPilot = null;
@@ -106,6 +110,7 @@ namespace FemboiTomboi
         private void RebuildDisplayCache()
         {
             _cachedObjectives.Clear();
+            var _seenObjectives = new System.Collections.Generic.HashSet<string>();
 
             // CAP targets
             foreach (var u in previouslySpottedAircraft)
@@ -113,7 +118,9 @@ namespace FemboiTomboi
                 if (u == null || !u.gameObject.activeInHierarchy || u.disabled) continue;
                 string sector = GetSector(u.transform.position);
                 string name   = GetCleanUnitName(u);
-                _cachedObjectives.Add(new ObjectiveEntry { Text = $"{prefixAir}:\nActive Tasking: CAP\nTarget: {name} at Sector {sector}.\nExecute when ready.", Priority = 0 });
+                string txt    = $"{prefixAir}:\nActive Tasking: CAP\nTarget: {name} at Sector {sector}.\nExecute when ready.";
+                if (_seenObjectives.Add(txt))
+                    _cachedObjectives.Add(new ObjectiveEntry { Text = txt, Priority = 0, Position = u.transform.position });
                 if (_cachedObjectives.Count >= 7) break;
             }
 
@@ -124,7 +131,9 @@ namespace FemboiTomboi
                 if (_cachedObjectives.Count >= 7) break;
                 string sector = GetSector(u.transform.position);
                 string name   = GetCleanUnitName(u);
-                _cachedObjectives.Add(new ObjectiveEntry { Text = $"{prefixAir}:\nActive Tasking: SEAD/DEAD\nTarget: {name} at Sector {sector}.\nExecute when ready.", Priority = 0 });
+                string txt    = $"{prefixAir}:\nActive Tasking: SEAD/DEAD\nTarget: {name} at Sector {sector}.\nExecute when ready.";
+                if (_seenObjectives.Add(txt))
+                    _cachedObjectives.Add(new ObjectiveEntry { Text = txt, Priority = 0, Position = u.transform.position });
             }
 
             // CAS targets
@@ -134,7 +143,9 @@ namespace FemboiTomboi
                 if (_cachedObjectives.Count >= 7) break;
                 string sector = GetSector(u.transform.position);
                 string name   = GetCleanUnitName(u);
-                _cachedObjectives.Add(new ObjectiveEntry { Text = $"{prefixArmy}:\nActive Tasking: CAS\nTarget: {name} at Sector {sector}.\nExecute when ready.", Priority = 1 });
+                string txt    = $"{prefixArmy}:\nActive Tasking: CAS\nTarget: {name} at Sector {sector}.\nExecute when ready.";
+                if (_seenObjectives.Add(txt))
+                    _cachedObjectives.Add(new ObjectiveEntry { Text = txt, Priority = 1, Position = u.transform.position });
             }
 
             // Intercept targets
@@ -144,7 +155,9 @@ namespace FemboiTomboi
                 if (_cachedObjectives.Count >= 7) break;
                 string sector = GetSector(u.transform.position);
                 string name   = GetCleanUnitName(u);
-                _cachedObjectives.Add(new ObjectiveEntry { Text = $"{prefixArmy}:\nActive Tasking: INTERCEPT\nTarget: {name} at Sector {sector}.\nExecute when ready.", Priority = 1 });
+                string txt    = $"{prefixArmy}:\nActive Tasking: INTERCEPT\nTarget: {name} at Sector {sector}.\nExecute when ready.";
+                if (_seenObjectives.Add(txt))
+                    _cachedObjectives.Add(new ObjectiveEntry { Text = txt, Priority = 1, Position = u.transform.position });
             }
 
             // Airbase threats from activeThreats
@@ -155,14 +168,29 @@ namespace FemboiTomboi
                 if (_cachedObjectives.Count >= 7) break;
                 string sector = GetSector(t.ThreatUnit.transform.position);
                 string prefix = t.TargetPrefix ?? prefixArmy;
-                bool isNuke = t.IsNuke;
-                string msg = $"{prefix}:\nActive Tasking: INTERCEPT\nTarget: {(isNuke ? "Nuclear Strike" : "Incoming")} for {t.TargetName} on Sector {sector}.\nPriority: {(isNuke ? "CRITICAL" : "HIGH")}";
-                _cachedObjectives.Add(new ObjectiveEntry { Text = msg, Priority = isNuke ? 2 : 1 });
+                bool isNuke   = t.IsNuke;
+                string txt    = $"{prefix}:\nActive Tasking: INTERCEPT\nTarget: {(isNuke ? "Nuclear Strike" : "Incoming")} for {t.TargetName} on Sector {sector}.\nPriority: {(isNuke ? "CRITICAL" : "HIGH")}";
+                if (_seenObjectives.Add(txt))
+                    _cachedObjectives.Add(new ObjectiveEntry { Text = txt, Priority = isNuke ? 2 : 1, Position = t.ThreatUnit.transform.position });
             }
 
             // Sort objectives by priority
             _cachedObjectives.Sort((a, b) => b.Priority.CompareTo(a.Priority));
             if (_cachedObjectives.Count > 7) _cachedObjectives.RemoveRange(7, _cachedObjectives.Count - 7);
+
+            // Find the closest high-priority (Priority >= 1) objective to the player
+            _cachedClosestHighPriority = null;
+            GameManager.GetLocalAircraft(out Aircraft localAcForObjectives);
+            if (localAcForObjectives != null)
+            {
+                float bestDist = float.MaxValue;
+                foreach (var e in _cachedObjectives)
+                {
+                    if (e.Priority < 1) continue;
+                    float d = Vector3.Distance(localAcForObjectives.transform.position, e.Position);
+                    if (d < bestDist) { bestDist = d; _cachedClosestHighPriority = e; }
+                }
+            }
 
             // Threats display
             _cachedCarriers.Clear();
@@ -171,6 +199,12 @@ namespace FemboiTomboi
             _cachedLaunchedNukeCount   = 0;
             _cachedIncomingMissileCount = 0;
             _cachedGlobalMinTof         = 99999f;
+
+            var nukeCounts = new System.Collections.Generic.Dictionary<string, int>();
+            var nukeTotalTof = new System.Collections.Generic.Dictionary<string, float>();
+            var nukeMinTof = new System.Collections.Generic.Dictionary<string, float>();
+            var nukeOclock = new System.Collections.Generic.Dictionary<string, int>();
+            var nukeTargetTxt = new System.Collections.Generic.Dictionary<string, string>();
 
             foreach (var t in activeThreats)
             {
@@ -201,7 +235,21 @@ namespace FemboiTomboi
 
                     string seekerStr = !string.IsNullOrEmpty(t.SeekerType) ? $"[{t.SeekerType}]" : "[UNK]";
                     string targetTxt = t.IsTargetingPlayer ? seekerStr + " " : "";
-                    _cachedNukes.Add(new ThreatEntry { Text = $"{targetTxt}[{sector}] Nuke | Dir:{oclock} o'clock | ToF:{tof:F0}s", MinTof = tof, BlinkRate = 10f });
+
+                    if (!nukeCounts.ContainsKey(sector)) {
+                        nukeCounts[sector] = 0;
+                        nukeTotalTof[sector] = 0f;
+                        nukeMinTof[sector] = 99999f;
+                        nukeOclock[sector] = oclock;
+                        nukeTargetTxt[sector] = targetTxt;
+                    }
+                    nukeCounts[sector]++;
+                    nukeTotalTof[sector] += tof;
+                    if (tof < nukeMinTof[sector]) {
+                        nukeMinTof[sector] = tof;
+                        nukeOclock[sector] = oclock;
+                        nukeTargetTxt[sector] = targetTxt;
+                    }
                 }
                 else if (t.IsLaunched && t.IsTargetingPlayer && !t.IsNuke)
                 {
@@ -222,8 +270,23 @@ namespace FemboiTomboi
                     }
 
                     string seekerStr = !string.IsNullOrEmpty(t.SeekerType) ? $"[{t.SeekerType}]" : "[UNK]";
-                    _cachedMissiles.Add(new ThreatEntry { Text = $"{seekerStr} [{sector}] Msle | Dir:{oclock} o'clock | ToF:{tof:F0}s", MinTof = tof, BlinkRate = rate });
+                    _cachedMissiles.Add(new ThreatEntry { Text = $"[{seekerStr}] {t.ThreatUnit.name.Replace("(Clone)", "")} | Dir:{oclock} o'clock | ToF:{tof:F0}s", MinTof = tof, BlinkRate = rate });
                 }
+            }
+
+            foreach (var kvp in nukeCounts) {
+                string sec = kvp.Key;
+                int count = kvp.Value;
+                float minTof = nukeMinTof[sec];
+                float avgTof = nukeTotalTof[sec] / count;
+                int oclock = nukeOclock[sec];
+                string tTxt = nukeTargetTxt[sec];
+                
+                string txt = count > 1 
+                    ? $"{tTxt}[{sec}] {count} Nukes | Dir:{oclock} o'clock | Avg ToF:{avgTof:F0}s"
+                    : $"{tTxt}[{sec}] Nuke | Dir:{oclock} o'clock | ToF:{minTof:F0}s";
+                    
+                _cachedNukes.Add(new ThreatEntry { Text = txt, MinTof = minTof, BlinkRate = 10f });
             }
 
             _displayCacheReady = true;
@@ -247,12 +310,14 @@ namespace FemboiTomboi
                 };
                 messageStyle.normal.textColor = new Color(0.1f, 0.9f, 0.2f);
 
-                nukeStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperRight };
+                nukeStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperRight, fontSize = 11 };
                 nukeStyle.normal.textColor = Color.yellow;
 
-                criticalNukeStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperRight };
+                criticalNukeStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperRight, fontSize = 11 };
 
-                incomingStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperRight };
+                criticalNukeCenterStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperCenter, fontSize = 12 };
+
+                incomingStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperRight, fontSize = 11 };
                 incomingStyle.normal.textColor = new Color(1f, 0.4f, 0f); // Orange
 
                 Texture2D bgTex = new Texture2D(1, 1);
@@ -263,9 +328,8 @@ namespace FemboiTomboi
                 bgStyle.normal.background = bgTex;
 
                 // Build derived styles ONCE here
-                _mapStyle      = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperLeft };
-                _sarStyle      = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperLeft };
-                _centeredStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperCenter };
+                _mapStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperLeft, fontSize = 13 };
+                _sarStyle = new GUIStyle(messageStyle) { alignment = TextAnchor.UpperLeft, fontSize = 13 };
                 _sarStyle.normal.textColor = Color.white;
             }
 
@@ -273,36 +337,34 @@ namespace FemboiTomboi
             float screenW = Screen.width;
             float screenH = Screen.height;
 
-            // 1. Draw Map Full Screen Objectives (Top Left) — zero allocation, reads cached data
+            // 1. Draw Map Priority Objectives (Bottom Left, 1 objective only)
             if (mapOpen && _displayCacheReady)
             {
-                float mapWidth = 380f;
-                float mapHeight = 110f;
+                float mapWidth  = 380f;
+                float mapHeight = 90f;
                 float mapX = 20f;
-                float mapBaseY = 20f;
 
-                if (_cachedObjectives.Count > 0)
+                int displayCount = Mathf.Min(_cachedObjectives.Count, 1);
+                if (displayCount > 0)
                 {
-                    GUI.Box(new Rect(mapX - 10, mapBaseY - 10, mapWidth + 20, 40), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(mapX, mapBaseY - 5, mapWidth, 30), "ACTIVE PRIORITY OBJECTIVES", _mapStyle);
-
                     bool isObjRed = (Time.time * 10f) % 1f < 0.5f;
-                    for (int i = 0; i < _cachedObjectives.Count; i++)
-                    {
-                        float y = mapBaseY + 40f + (i * (mapHeight + 10f));
-                        int prio = _cachedObjectives[i].Priority;
-                        if (prio == 0)      _mapStyle.normal.textColor = messageStyle.normal.textColor;
-                        else if (prio == 1) _mapStyle.normal.textColor = Color.yellow;
-                        else                _mapStyle.normal.textColor = isObjRed ? Color.red : Color.yellow;
+                    float y = screenH - 20f - mapHeight;
+                    int prio = _cachedObjectives[0].Priority;
+                    if (prio == 0)      _mapStyle.normal.textColor = messageStyle.normal.textColor;
+                    else if (prio == 1) _mapStyle.normal.textColor = Color.yellow;
+                    else                _mapStyle.normal.textColor = isObjRed ? Color.red : Color.yellow;
 
-                        GUI.Box(new Rect(mapX - 10, y - 10, mapWidth + 20, mapHeight + 20), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(mapX, y, mapWidth, mapHeight), _cachedObjectives[i].Text, _mapStyle);
-                    }
-                    // Restore base color
+                    GUI.Box(new Rect(mapX - 10, y - 10, mapWidth + 20, mapHeight + 20), GUIContent.none, bgStyle);
+                    GUI.Label(new Rect(mapX, y, mapWidth, mapHeight), _cachedObjectives[0].Text, _mapStyle);
                     _mapStyle.normal.textColor = messageStyle.normal.textColor;
+
+                    // Header
+                    float headerY = y - 35f;
+                    GUI.Box(new Rect(mapX - 10, headerY - 5, mapWidth + 20, 30), GUIContent.none, bgStyle);
+                    GUI.Label(new Rect(mapX, headerY, mapWidth, 25), "ACTIVE PRIORITY OBJECTIVES", _mapStyle);
                 }
 
-                // SAR Box (Bottom Left)
+                // SAR Box (Bottom Right)
                 GameManager.GetLocalAircraft(out Aircraft localAc);
                 if (localAc != null && localAc.NetworkHQ != null && cachedNearestPilot != null && cachedNearestPilot.gameObject.activeInHierarchy && !cachedNearestPilot.disabled)
                 {
@@ -315,7 +377,7 @@ namespace FemboiTomboi
 
                     float sarWidth = 380f;
                     float sarHeight = 60f;
-                    float sarX = 20f;
+                    float sarX = screenW - sarWidth - 20f;
                     float sarY = screenH - sarHeight - 20f;
                     string sarMsg = $"{prefixAir}:\nNearest Disembarked Pilot: {bearing:F0}° at {distanceNm:F1} NM";
                     GUI.Box(new Rect(sarX - 10, sarY - 10, sarWidth + 20, sarHeight + 20), GUIContent.none, bgStyle);
@@ -323,93 +385,80 @@ namespace FemboiTomboi
                 }
             }
 
-            // 2. Draw Top Center New Objective Feed (only in game, NOT on map)
-            if (messageLog.Count > 0 && !mapOpen)
+            // 2. New Objective Feed: rendering moved to the in-cockpit ObjectiveHUDIndicator (HMD)
+            // when the map is closed; just keep the log pruned of expired entries here.
+            if (messageLog.Count > 0)
             {
                 messageLog.RemoveAll(m => Time.time > m.ExpirationTime);
-
-                float width = 600f;
-                float height = 110f; 
-                float x = (screenW - width) / 2f; // Top Center
-                float baseY = 20f;
-                bool isMsgRed = (Time.time * 6f) % 1f < 0.5f;
-
-                for (int i = 0; i < messageLog.Count; i++)
-                {
-                    int reverseIndex = messageLog.Count - 1 - i; // Newest at top
-                    float y = baseY + (reverseIndex * (height + 10f));
-
-                    Color baseColor;
-                    if (messageLog[i].Priority == 1) baseColor = Color.yellow;
-                    else if (messageLog[i].Priority == 2) baseColor = isMsgRed ? Color.red : Color.yellow;
-                    else baseColor = messageStyle.normal.textColor;
-
-                    float elapsed = Time.time - messageLog[i].Timestamp;
-                    float totalDur = messageLog[i].ExpirationTime - messageLog[i].Timestamp;
-                    baseColor.a = Mathf.Clamp01(1f - (elapsed / totalDur));
-                    _centeredStyle.normal.textColor = baseColor;
-
-                    GUI.Box(new Rect(x - 10, y - 10, width + 20, height + 20), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(x, y, width, height), messageLog[i].Text, _centeredStyle);
-                }
             }
 
             // 3. Nuke/Missile Threats Overlay (Top Right) — zero allocation, reads cached data
             if (_displayCacheReady && (_cachedCarriers.Count > 0 || _cachedNukes.Count > 0 || _cachedMissiles.Count > 0))
             {
-                float totalHeight = 0f;
-                if (_cachedCarriers.Count  > 0) totalHeight += 40f + (_cachedCarriers.Count  * 30f);
-                if (_cachedNukes.Count     > 0) totalHeight += 40f + (_cachedNukes.Count     * 30f) + (_cachedCarriers.Count > 0 ? 10f : 0f);
-                if (_cachedMissiles.Count  > 0) totalHeight += 40f + (_cachedMissiles.Count  * 30f) + ((_cachedCarriers.Count > 0 || _cachedNukes.Count > 0) ? 10f : 0f);
-
-                float currentY = mapOpen ? 20f : (screenH - totalHeight) / 2f;
+                const float alertW = 420f;
+                float totalBlockHeight = (_cachedCarriers.Count > 0 ? 30f : 0f) 
+                                       + (_cachedNukes.Count > 0 ? 30f + _cachedNukes.Count * 25f : 0f)
+                                       + (_cachedMissiles.Count > 0 ? 30f + _cachedMissiles.Count * 25f : 0f);
+                float currentY = mapOpen ? 20f : (screenH / 2f - totalBlockHeight / 2f);
                 bool isNukeRed = (Time.time * 1f) % 1f < 0.5f;
                 criticalNukeStyle.normal.textColor = isNukeRed ? Color.red : Color.yellow;
+                float rightEdge = screenW - 10f;
 
+                // Carriers
                 if (_cachedCarriers.Count > 0)
                 {
-                    GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 40), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(screenW - 410, currentY, 400, 30), "WARNING: NUCLEAR CARRIERS", nukeStyle);
-                    currentY += 40f;
-                    for (int i = 0; i < _cachedCarriers.Count; i++)
-                    {
-                        GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 30), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(screenW - 410, currentY, 400, 30), _cachedCarriers[i].Text, nukeStyle);
-                        currentY += 30f;
-                    }
-                    if (_cachedNukes.Count > 0 || _cachedMissiles.Count > 0) currentY += 10f;
+                    GUI.Box(new Rect(rightEdge - alertW - 10, currentY - 5, alertW + 20, 30), GUIContent.none, bgStyle);
+                    GUI.Label(new Rect(rightEdge - alertW, currentY, alertW, 25), $"WARNING: {_cachedCarriers.Count} NUCLEAR CARRIER(S)", nukeStyle);
+                    currentY += 30f;
                 }
 
+                // Nukes
                 if (_cachedNukes.Count > 0)
                 {
-                    GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 40), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(screenW - 410, currentY, 400, 30), $"CRITICAL: {_cachedLaunchedNukeCount} NUKES INBOUND", criticalNukeStyle);
-                    currentY += 40f;
+                    float minNukeTof = 99999f;
+                    for (int i = 0; i < _cachedNukes.Count; i++)
+                        if (_cachedNukes[i].MinTof < minNukeTof) minNukeTof = _cachedNukes[i].MinTof;
+
+                    string nukeHeader = $"CRITICAL: {_cachedLaunchedNukeCount} NUKE(S) INBOUND | ToF:{minNukeTof:F0}s";
+                    
+                    float blockHeight = 30f + (_cachedNukes.Count * 25f);
+                    float detailY = currentY;
+                    
+                    bool isNukeRedHeader = (Time.time * 1f) % 1f < 0.5f;
+                    criticalNukeStyle.normal.textColor = isNukeRedHeader ? Color.red : Color.yellow;
+                    
+                    // Header
+                    GUI.Box(new Rect(rightEdge - alertW - 10, detailY - 5, alertW + 20, 30), GUIContent.none, bgStyle);
+                    GUI.Label(new Rect(rightEdge - alertW, detailY, alertW, 25), nukeHeader, criticalNukeStyle);
+                    detailY += 30f;
+
+                    // Details
                     for (int i = 0; i < _cachedNukes.Count; i++)
                     {
-                        GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 30), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(screenW - 410, currentY, 400, 30), _cachedNukes[i].Text, criticalNukeStyle);
-                        currentY += 30f;
+                        GUI.Box(new Rect(rightEdge - alertW - 10, detailY - 5, alertW + 20, 25), GUIContent.none, bgStyle);
+                        GUI.Label(new Rect(rightEdge - alertW, detailY, alertW, 25), _cachedNukes[i].Text, criticalNukeStyle);
+                        detailY += 25f;
                     }
-                    if (_cachedMissiles.Count > 0) currentY += 10f;
+                    currentY = detailY;
                 }
 
+                // Missiles
                 if (_cachedMissiles.Count > 0)
                 {
                     float headerBlinkRate = Mathf.Clamp(10f / Mathf.Max(0.5f, _cachedGlobalMinTof), 0.5f, 15f);
                     bool isHeaderRed = (Time.time * headerBlinkRate) % 1f < 0.5f;
                     incomingStyle.normal.textColor = isHeaderRed ? Color.red : Color.yellow;
-                    GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 40), GUIContent.none, bgStyle);
-                    GUI.Label(new Rect(screenW - 410, currentY, 400, 30), $"WARNING: {_cachedIncomingMissileCount} INCOMING MISSILES", incomingStyle);
-                    currentY += 40f;
+                    GUI.Box(new Rect(rightEdge - alertW - 10, currentY - 5, alertW + 20, 30), GUIContent.none, bgStyle);
+                    GUI.Label(new Rect(rightEdge - alertW, currentY, alertW, 25), $"WARNING: {_cachedIncomingMissileCount} INCOMING MISSILE(S)", incomingStyle);
+                    currentY += 30f;
 
                     for (int i = 0; i < _cachedMissiles.Count; i++)
                     {
                         bool isRed = (Time.time * _cachedMissiles[i].BlinkRate) % 1f < 0.5f;
                         incomingStyle.normal.textColor = isRed ? Color.red : Color.yellow;
-                        GUI.Box(new Rect(screenW - 420, currentY - 5, 410, 30), GUIContent.none, bgStyle);
-                        GUI.Label(new Rect(screenW - 410, currentY, 400, 30), _cachedMissiles[i].Text, incomingStyle);
-                        currentY += 30f;
+                        GUI.Box(new Rect(rightEdge - alertW - 10, currentY - 5, alertW + 20, 25), GUIContent.none, bgStyle);
+                        GUI.Label(new Rect(rightEdge - alertW, currentY, alertW, 25), _cachedMissiles[i].Text, incomingStyle);
+                        currentY += 25f;
                     }
                     // Restore orange
                     incomingStyle.normal.textColor = new Color(1f, 0.4f, 0f);
